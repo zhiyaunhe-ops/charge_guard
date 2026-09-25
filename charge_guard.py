@@ -136,10 +136,20 @@ def load_config(path: str) -> dict:
     cfg = json.loads(Path(path).read_text(encoding="utf-8"))
     cfg = _deep_merge(DEFAULTS, cfg)
 
-    # 密钥不进 git：插座 token 可用环境变量覆盖配置文件里的值
+    # 本机覆盖层（不进 git）：密钥、只在本机成立的路径放这里，受版本控制的配置保持干净。
+    # 约定：<配置名>.local.json，内容只写要覆盖的键（charge_guard.json → charge_guard.local.json）
+    p = Path(path)
+    local = p.with_name(p.stem + ".local.json")
+    if local.exists():
+        cfg = _deep_merge(cfg, json.loads(local.read_text(encoding="utf-8")))
+
+    # 密钥不进 git：插座 / 充电器 token 都可用环境变量覆盖前面的值
     env_token = os.environ.get("CHARGE_GUARD_PLUG_TOKEN")
     if env_token:
         cfg["plug"]["token"] = env_token
+    env_ble = os.environ.get(cfg["charger_ble"].get("token_env") or "CHARGER_BLE_TOKEN")
+    if env_ble:
+        cfg["charger_ble"]["token"] = env_ble
 
     p = cfg["policy"]
     if not (0 <= p["resume_at"] < p["stop_at"] <= 100):

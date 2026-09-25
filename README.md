@@ -15,7 +15,7 @@
 | `dumpsys battery` 解析 | ✅ **真机验证通过**（含温度 0.1℃ 换算、AC powered） |
 | 判定逻辑（65/50 滞回、温度、稳定性门、失联分级） | ✅ 桩数据自测 **54 项全通过**（`--self-test`） |
 | 真机 dry-run 全链路 | ✅ 通过，记录见 `dryrun-real-device.txt` |
-| **BLE 执行端（直控充电器 C1 口）** | 🟡 **代码就绪，未真机验证** —— 缺 token（需本人登录小米云）；缺 token 时会优雅降级为只读 |
+| **BLE 执行端（直控充电器 C1 口）** | 🟡 **凭据已到手，真机连接待打通** —— token/address 已取到（2026-09-25）；首次 `--probe-charger` 报 `Device with address 3C:CD:73:37:B7:EE was not found`，即 PC 当前看不到它（息屏停播 / 米家 App 占连接 / 距离）→ 双击 `run_charger_check.bat` |
 | **断电后的 `AC powered` 回读** | ⛔ **未验证** —— dry-run 没真正断电 |
 | 端口掩码写入并回读确认 | 🟡 逻辑已实现（`ble_plug.py::set_power`），待真机验 |
 | ~~插座通断指令（python-miio）~~ | ⏸ 已放弃该路线：不需要买插座，改用 BLE 直控 |
@@ -228,10 +228,13 @@ cd third_party/xiaomi-ad1204-python
 python fetch_tokens.py --region cn
 #   输出里找 njcuk.fitting.ad1204 那一条，抄下 address 与 token
 
-# 4) 注入凭据（不进 git）
+# 4) 注入凭据（不进 git）—— 两种方式任选
+#    a) 写进本机覆盖层 charge_guard.local.json（已在 .gitignore 里，最省事）：
+#       {"charger_ble": {"token": "<24位hex>"}}      ← 会覆盖 charge_guard.json 的同名键
+#    b) 环境变量（优先级最高）：
 export CHARGER_BLE_TOKEN=<24位hex>
-#   Windows PowerShell:  $env:CHARGER_BLE_TOKEN = "<24位hex>"
-#   并把 address 填进 charge_guard.json 的 charger_ble.address
+#       Windows PowerShell:  $env:CHARGER_BLE_TOKEN = "<24位hex>"
+#    address 填进 charge_guard.json 的 charger_ble.address（不是密钥，可以进 git）
 ```
 
 ### 验证顺序（别跳步）
