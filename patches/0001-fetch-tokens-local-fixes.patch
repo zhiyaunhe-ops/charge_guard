@@ -1,8 +1,27 @@
+diff --git a/.gitignore b/.gitignore
+index bd94291..9b9a56c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -19,3 +19,6 @@ plugin_out/
+ 
+ # OS junk
+ .DS_Store
++
++# local state: 固定客户端身份（UA/deviceId），非密钥但属于本机状态
++xiaomi.client.json
 diff --git a/fetch_tokens.py b/fetch_tokens.py
-index 5c7e96c..38597b6 100644
+index 5c7e96c..6bc2ff6 100644
 --- a/fetch_tokens.py
 +++ b/fetch_tokens.py
-@@ -64,6 +64,34 @@ def rc4_dec(key_b64: str, payload: str) -> bytes:
+@@ -27,6 +27,7 @@ ACCOUNT = "https://account.xiaomi.com"
+ CAPTCHA_PORT = 31415
+ OUTDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin_out")
+ TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xiaomi.token")
++CLIENT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xiaomi.client.json")
+ 
+ # Login is account-wide; home/device data lives on one specific regional
+ # server that doesn't have to match the device's model region. When --region
+@@ -64,6 +65,34 @@ def rc4_dec(key_b64: str, payload: str) -> bytes:
  
  
  # ----------------------------------------------------------------- captcha server
@@ -37,7 +56,7 @@ index 5c7e96c..38597b6 100644
  def serve_captcha(image: bytes, stop: threading.Event):
      class H(BaseHTTPRequestHandler):
          def do_GET(self):
-@@ -84,7 +112,8 @@ def serve_captcha(image: bytes, stop: threading.Event):
+@@ -84,19 +113,44 @@ def serve_captcha(image: bytes, stop: threading.Event):
          f.write(image)
      print(f"[!] CAPTCHA required. Open http://127.0.0.1:{CAPTCHA_PORT} in a browser "
            f"(image also saved to {path}), solve it, then enter the code.")
@@ -47,7 +66,56 @@ index 5c7e96c..38597b6 100644
      stop.set()
      srv.shutdown()
      return code
-@@ -188,7 +217,7 @@ class MiCloud:
+ 
+ 
+ # ----------------------------------------------------------------- connector
++def stable_client_identity():
++    """[local patch] UA 与 deviceId 固定并缓存，跨次运行复用。
++
++    为什么：原实现每次运行都随机生成这两个值 —— 对小米账号系统来说，
++    这等价于「每次登录都换一台从没见过的新设备」，正好落在风控最敏感的输入上。
++    账号**没有开**二次验证也会因此被要求身份验证（风控触发，与账号设置那个开关无关）。
++    真实米家 App 同一次安装里这两个值本来就是稳定的，这里照做：第一次生成后落盘，之后一直用它。
++    """
++    try:
++        with open(CLIENT_FILE, encoding="utf-8") as f:
++            c = json.load(f)
++        if c.get("agent") and c.get("deviceId"):
++            return c["agent"], c["deviceId"]
++    except Exception:
++        pass
++    agent = ("".join(chr(random.randint(97, 122)) for _ in range(18))
++             + "-" + "".join(chr(random.randint(65, 69)) for _ in range(13))
++             + " APP/com.xiaomi.mihome APPV/10.5.201")
++    device_id = "".join(chr(random.randint(97, 122)) for _ in range(6))
++    try:
++        with open(CLIENT_FILE, "w", encoding="utf-8") as f:
++            json.dump({"agent": agent, "deviceId": device_id}, f, ensure_ascii=False, indent=2)
++    except OSError:
++        pass
++    return agent, device_id
++
++
+ class MiCloud:
+     def __init__(self):
+-        self.agent = ("".join(chr(random.randint(97, 122)) for _ in range(18))
+-                      + "-" + "".join(chr(random.randint(65, 69)) for _ in range(13))
+-                      + " APP/com.xiaomi.mihome APPV/10.5.201")
+-        self.device_id = "".join(chr(random.randint(97, 122)) for _ in range(6))
++        self.agent, self.device_id = stable_client_identity()
+         self.s = requests.Session()
+         self.s.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="mi.com")
+         self.s.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="xiaomi.com")
+@@ -115,6 +169,8 @@ class MiCloud:
+     def login(self, username, password):
+         self.username, self.password = username, password
+         print(f"[*] logging in to Xiaomi account {username}")
++        # [local patch] 固定身份的可见性：同一台「设备」复用同一个 deviceId，风控才认得出「不是新设备」
++        print(f"[i] client deviceId={self.device_id}（固定复用，存在 {os.path.basename(CLIENT_FILE)}）")
+         if not self._login_step_1():
+             sys.exit("[-] invalid username (step 1)")
+         if not self._login_step_2():
+@@ -188,7 +244,7 @@ class MiCloud:
              self.pass_token, self.location = js.get("passToken"), js.get("location")
              return True
          if js.get("notificationUrl"):
@@ -56,7 +124,7 @@ index 5c7e96c..38597b6 100644
          print(f"[-] login_step_2 returned: {js}")
          return False
  
-@@ -197,26 +226,69 @@ class MiCloud:
+@@ -197,26 +253,69 @@ class MiCloud:
          self.serviceToken = r.cookies.get("serviceToken")
          return r.status_code == 200 and self.serviceToken
  

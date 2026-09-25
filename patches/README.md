@@ -23,7 +23,7 @@
     C:/Users/zhiya/.workbuddy/binaries/python/envs/default/Scripts/python.exe -X utf8 patches/test_fetch_tokens_2fa_offline.py
     ```
 
-本补丁包含三处改动，按发现顺序：
+本补丁包含四处改动，按发现顺序：
 
 ### 1. 非交互输入（`wait_for_input_file`）
 
@@ -46,10 +46,28 @@
   （映射与两个仍在维护的实现一致：`merdok/homebridge-miot`、`al-one/hass-xiaomi-miot`）。
   原实现硬编码邮箱通道，于是：`sendEmailTicket` 照样返回「成功」并把码发进邮箱，
   但服务端只认短信码 → `verifyEmail` 永远 `code:2`。**不是验证码抄错。**
+  ⚠️ 待重跑确认：`identity/list` 的原文当时没有被打印（诊断补丁只加了 send/verify 两处），
+  「只给短信」是从 verify 的失败响应体反推的。现在脚本会打印 `identity/list`，跑一次即可定论。
+- **顺序纠正**：这一步**不等于账号开了二次验证**。账号设置里的「二次验证」是关着的也能触发
+  —— 触发它的是小米的**风控**（新设备 / 新 UA / 新 IP / 频繁登录都会触发），
+  官方口径是「每次登录都会检查网络环境，检测到异常或风险就必须验证」。
+  所以「没开 2FA」与「被要求输验证码」两件事可以同时成立。
 - **改动**：先 GET `identity/list`，按 `flag`/`options` 决定渠道 ——
   `8` → 邮箱（保留 `sendEmailTicket`，提示语不变）；
   `4` → 短信（验证码由 authStart 自动下发，没有对应的主动 send 调用，提示语改为「短信验证码」）；
   按渠道 POST `verifyEmail` / `verifyPhone`，并显式带上 `identity_session` cookie；
   返回 code 非 0 时直接以明确文案退出，不再谎报「密码错误」。
+
+### 4. 客户端身份固定（`stable_client_identity`）
+
+- **问题**：原实现**每次运行都随机生成 UA 与 `deviceId`**（`MiCloud.__init__` 里两段
+  `random`），对账号系统来说这等价于「每次登录都换一台从没见过的设备」——
+  正好落在风控最敏感的输入上，于是每轮都被要求身份验证。反复重试还会加重风控。
+- **改动**：第一次生成后写进 `xiaomi.client.json`（已加进上游 `.gitignore`），之后一直复用；
+  `login()` 里把 `deviceId` 打印出来，让「同一台设备」这件事可见。
+  真实米家 App 的同一次安装里这两个值本来就是稳定的，这里只是照它的行为。
+- **注意**：这是**降低触发概率**，不是保证——风控还看 IP 与登录频率。
+  但一旦成功过一次，凭据会缓存进 `xiaomi.token`，之后重跑直接复用、不再登录（`load_token`），
+  所以这套流程只需要闯过一次。
 
 ⚠️ 上游更新后应用本补丁可能冲突 —— 冲突就以「按上面三条重新加改动」为准，别硬套。
