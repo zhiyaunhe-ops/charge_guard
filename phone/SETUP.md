@@ -24,7 +24,7 @@
 | **执行端：局域网控插座** | ✅ 已写完，并在 PC 上对真机验证（握手 + 读开关/功率/故障） |
 | **Python 依赖** | ✅ **零第三方依赖**：miIO 协议与 AES-128 都用标准库实现 |
 | 插座凭据 | ✅ 已取到（`cuco.plug.v3 @192.168.0.99`），编号已按真机核对 |
-| 推到手机 + 跑起来 | ⬜ 待做（第二、三节） |
+| 推到手机 + 跑起来 | ✅ **2026-09-25 22:26 已在手机上正式运行** |
 | 「断电后手机是否真的不再充电」 | ✅ **已实测通过（2026-09-25 深夜）**，数据见第七节 |
 
 ### 执行端为什么不装 python-miio
@@ -68,7 +68,7 @@ pkg install -y python termux-api     # ⚠️ 不需要 pip 装任何东西
 |---|---|
 | `charge_guard_phone.py` | 主程序（判定 + miIO 执行端，纯标准库） |
 | `charge_guard_phone.json` | 配置（可进 git 的那份，**不含 token**） |
-| `charge_guard_phone.local.json` | **本机覆盖层：放插座 token**（不进 git） |
+| `charge_guard_phone.local.json` | **本机覆盖层：插座 token + 日志路径**（不进 git） |
 
 推送方式（任选）：
 
@@ -104,6 +104,17 @@ python charge_guard_phone.py                       # 正式运行
 **字段确认要点**：`termux-battery-status` 的 `temperature` 单位是 **摄氏度**（如 `33.7`），
 而 PC 侧 `dumpsys battery` 是 **0.1℃**（`337`）。脚本按摄氏度处理，**不要再除以 10**。
 自测里有断言钉住这件事（误除 10 会让 45℃ 阈值形同虚设）。
+
+### 手机上的实际落位（2026-09-25 部署结果）
+
+| 项 | 值 |
+|---|---|
+| 代码目录 | `~/charge_guard/`（3 个文件已拷入） |
+| python | 用 `pkg install -y python` 装好（含依赖约 97 MB） |
+| 存储权限 | `appops set com.termux MANAGE_EXTERNAL_STORAGE allow`（否则读不了 /sdcard） |
+| 日志 | `/sdcard/charge_guard/guard.out`、`/sdcard/charge_guard/phone_guard_log.csv`（放在共享存储，方便外部读） |
+| 自启脚本 | `~/.termux/boot/charge_guard.sh`（⚠️ **需要手动打开一次 Termux:Boot 应用**才会生效） |
+| 已写入的系统设置 | `wifi_sleep_policy=2`、`com.android.shell` 进 Doze 白名单 |
 
 ---
 
