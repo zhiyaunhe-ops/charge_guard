@@ -333,7 +333,88 @@ Luna 的手机（K70 Pro）**当场就能扫到充电器**（且此前从未配�
 | 看不到 | 看不到 | **OS 级发现在这台 PC 上是坏的** → 走修复阶梯第 1、2 步 |
 | 能看到 | 能看到 | 之前只是充电器没在广播；继续 `--dry-run` 与「关掉 C1 还能连回来」的验证 |
 
-### 顺带的工程改动
+---
+
+## 八、2026-09-25 深夜：PC 直连走到「设备拒绝完成握手」为止（结论：这条路没走通）
+
+凭据、发现、连接、订阅、写入这五关全部打通了，**卡在设备侧的 Mi BLE 登录握手**。
+下面每一行都是本机实测，不是推测。
+
+### 打通的部分
+
+| 环节 | 结果 | 关键点 |
+|---|---|---|
+| 凭据 | ✅ token 与云端一致、未轮换 | 用缓存会话重取一次核对过 |
+| 设备身份 | ✅ 云端地址 = Windows 配对地址 `BTHLE\DEV_3CCD7337B7EE` | 地址没有问题 |
+| PC 协议栈 | ✅ `Get-PnpDevice -Class Bluetooth` = 33 条 | 耳机/鼠标都正常 |
+| 广播发现 | ✅ 修好后能稳定扫到（rssi −54…−66） | 见下面的「发现的三个坑」 |
+| GATT 连接 | ✅ `mtu=247`，一次成功（1.9s） | 需 `use_cached_services=False` |
+| 通知订阅 | ✅ UPNP(0x0010) / AVDTP(0x0019) / SPEC_RX(0x001b) 全部成功 | 属性是 `write-without-response, notify` |
+| 写入 | ✅ 无响应写（no-response）成功 | 用 `response=True` 会被设备以 ATT 0x03 拒绝 |
+
+### 卡住的地方：登录握手
+
+两个实现都试了，**都停在同一类地方**：
+
+| 实现 | 行为 |
+|---|---|
+| `ohaiibuzzle/xiaomi-ad1204-python` | 直接发 `CMD_LOGIN(0x24)` → 设备回 **`e0000000`（明确拒绝）**。它**缺整个 Phase A（设备初始化 `0xa4`）** |
+| `kairui1108/cuktech-ble-server`（持续维护，「对齐米家」） | Phase A（`0xa4` 初始化 → ack → 收密钥交换数据 → 回占位）**全部走通**，再发 `CMD_LOGIN` + `SEND_KEY` → **等不到 `RCV_RDY`**，重试后放弃 |
+| 先做 Windows 配对（bond）再跑上面两套 | **结果完全相同** ⇒ 不是「链路未加密」这一条 |
+
+⇒ 设备**收得到我们的写入、也愿意回错误码**，但拒绝完成 Mi 的认证交换。
+两个上游实现的开发/测试环境都是 **Linux（BlueZ）**（上游 README 明说），
+所以现在的怀疑指向 **Windows/WinRT 这条 BLE 客户端路径**，而不是设备或凭据。
+另一条未验证的线索：他们的 Web 端有一个 `/api/xiaomi/beaconkey`「获取 BLE Key」接口
+（16 字节）——那份额外凭据是否参与握手，尚未证实。
+
+### 顺手修掉的 5 个真 bug（都会伪装成「设备不行」）
+
+1. **`args.rssi` 在本机 winrt 绑定里不存在** ⇒ 回调一抛异常，整条记录（连地址）被丢弃，
+   **明明收到广播也报「0 个」**。改成先记地址、再补次要字段。
+2. **`add_aborted` 不存在** ⇒ 上一个会话写的「无 aborted ⇒ 射频通路正常」**从来没被真正检查过**。
+3. **vendored 客户端在 `connect()` 自身失败时不断开** ⇒ OS 留着 ACL 链路 ⇒
+   充电器（一次只接受一条连接）停止广播 ⇒ 之后一路 `Device with address ... was not found`。
+   **设备没坏，是我们自己把它挂死的。**
+4. **过滤扫描在本机不可用**：`service_uuids=[FE95]` 与 bleak 内部的
+   `find_device_by_address` 都返回 0 / not found，而同一时刻**全量扫描能扫到它**。
+   改用「全量扫描 + 把 BLEDevice（或预置地址）交给客户端」。
+5. **默认 GATT 缓存模式**在 Windows 上会 `Could not get GATT services: Unreachable`，
+   必须 `winrt={'use_cached_services': False}`。
+
+另外两条**环境级**事实（都会让现象看起来像设备问题）：
+
+- **BLE 扫描会卡死，关掉蓝牙再打开即恢复**（同一台机器、同一驱动、5 次运行都是 0）。
+  以后遇到「一台都扫不到」先做这个，别先怀疑驱动/硬件。
+- **在 Windows 里配对会让 Windows 一直握着连接**（实测 `connection_status=1` 持续 30s+），
+  而**已连接的设备不广播** ⇒ 扫描必然扫不到。用 WinRT 的
+  `DeviceInformation.pairing.unpair_async()` 可以非管理员解绑，解绑后它立刻恢复广播。
+
+### 协议细节更正（谁接着做必须知道）
+
+`siid=2 piid=6`（息屏时间）的取值，两个实现给的**不一样**：
+
+| 实现 | 取值表 |
+|---|---|
+| `ohaiibuzzle`（我们 vendor 的那份） | `0:5m, 1:10m, 2:30m, 3:off, 4:1m` |
+| `kairui1108/cuktech-ble-server`（维护中） | `1:5min, 2:10min, 3:30min, **4:常亮**, 5:1min` |
+
+⇒ **「常亮」按维护中的那份是 `4`**，不是 `3`。写错会改到别的档位。
+
+### 还剩的三条路（按代价排序）
+
+1. **同一台 PC 上换 Linux 试**（U 盘启动 Live 或装双系统，零采购）：
+   上游两套实现都是 Linux/BlueZ 验证过的，用同一块 Intel 网卡、不碰 WinRT。
+2. **ESP32 桥**（¥20–40）：`kairui1108/cuktech-ble-esp32` 固件，PC 只走局域网，
+   完全不依赖 Windows 的 BLE 栈。这是上游为「Windows 不好用」准备的形态。
+3. **改走智能插座**（第五节路线 2）：需要买插座，而且断的是整机 220V。
+
+不建议继续在 Windows 的 BLE 客户端上试错：五关都通了、只差握手，
+而握手失败的原因指向平台差异，不是我们改得动的东西。
+
+---
+
+### 顺带的工程改动（第七节的收尾）
 
 - `run_charger_check.bat`：原文件是 **LF 换行 + 混入中文**，cmd.exe 解析时把每行首字符吃掉
   （`echo`→`cho`），已统一为 **CRLF + 纯 ASCII**，并用 `cmd /c call` 实测通过。
@@ -344,6 +425,7 @@ Luna 的手机（K70 Pro）**当场就能扫到充电器**（且此前从未配�
 
 ---
 
+## 参考
 
 - `ohaiibuzzle/xiaomi-ad1204-python` — https://github.com/ohaiibuzzle/xiaomi-ad1204-python
 - `kairui1108/cuktech-ble-ha` — https://github.com/kairui1108/cuktech-ble-ha

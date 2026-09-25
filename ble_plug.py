@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -115,19 +116,41 @@ class ChargerBle:
         return out
 
     def _run_resilient(self, sets: list[str] | None = None, watch: int = 0) -> str:
-        """先用配置里的 address 直连；连不上就退化成「让实现自己扫描找它」。
+        """直连优先、扫描兜底，并且**失败要重试** —— 这台机器上连接是概率性的。
 
-        为什么需要：这台充电器**息屏会停播**，而且云端记录的地址未必一直有效
-        （实测同一地址先能连上、几分钟后变成 not found）。写死地址会让执行端很脆；
-        vendored 实现本身支持不带 --address 时按 Mi 服务 UUID(FE95) 扫描再连。
+        为什么需要：
+          · 这台充电器**息屏会停播**，云端地址也未必一直有效；
+          · Windows 的 BLE 连接本身不稳定（实测同一配置时而成功、时而
+            `Unreachable` / `was not found`）。
+        所以单次失败不能当结论：最多试 3 轮，每轮之间隔几秒；只有「明确不是暂态」的
+        错误（如 token 不对、脚本自身参数错）才立刻抛出。
         """
-        try:
-            return self._run(sets=sets, watch=watch, use_address=True)
-        except ChargerBleError as e:
-            if not (self.address and "not found" in str(e).lower()):
-                raise
-            self.log(f"[charger] 用配置地址 {self.address} 连不上，改为扫描查找 …")
-            return self._run(sets=sets, watch=watch, use_address=False)
+        attempts = int(self.c.get("attempts", 3))
+        delay = float(self.c.get("retry_delay_sec", 5))
+        last = None
+        for i in range(1, max(1, attempts) + 1):
+            try:
+                try:
+                    text = self._run(sets=sets, watch=watch, use_address=True)
+                except ChargerBleError as e:
+                    if not (self.address and "not found" in str(e).lower()):
+                        raise
+                    self.log(f"[charger] 用配置地址 {self.address} 没找到，改为扫描查找 …")
+                    text = self._run(sets=sets, watch=watch, use_address=False)
+                if i > 1:
+                    self.log(f"[charger] 第 {i} 次尝试成功")
+                return text
+            except ChargerBleError as e:
+                last = e
+                msg = str(e)
+                transient = any(k in msg for k in
+                                ("Unreachable", "not found", "调用超时", "TimeoutError",
+                                 "BleakError", "InvalidState"))
+                if not transient or i >= attempts:
+                    raise
+                self.log(f"[charger] 第 {i} 次失败（{msg.strip().splitlines()[-1][:90]}），{delay:.0f}s 后重试 …")
+                time.sleep(delay)
+        raise last if last else ChargerBleError("未知失败")
 
     @staticmethod
     def parse_props(text: str) -> dict[tuple[int, int], object]:
@@ -146,7 +169,7 @@ class ChargerBle:
     # ---- 读
     def read_state(self) -> dict:
         """返回 {"mask": int, "props": {...}}。mask 是 siid2.piid16 的位掩码。"""
-        text = self._run()
+        text = self._run_resilient()
         props = self.parse_props(text)
         mask = props.get((2, 16))
         if not isinstance(mask, int):
@@ -185,7 +208,7 @@ class ChargerBle:
             return True
 
         # 一条命令里完成「写」+「回读全部属性」，省一次 BLE 连接
-        text = self._run(sets=[f"2-16={new}"])
+        text = self._run_resilient(sets=[f"2-16={new}"])
         props = self.parse_props(text)
         got = props.get((2, 16))
         ok = (got == new)
@@ -217,7 +240,7 @@ class ChargerBle:
 
         out(f"[charger] {self.describe()}")
         try:
-            text = self._run(watch=int(self.c.get("probe_watch_sec", 5)))
+            text = self._run_resilient(watch=int(self.c.get("probe_watch_sec", 5)))
         except Exception as e:
             out(f"[charger] 探测失败：{e}")
             out(f"[charger] 报告：{report}")
