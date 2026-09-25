@@ -1,0 +1,36 @@
+diff --git a/fetch_tokens.py b/fetch_tokens.py
+index 5c7e96c..98a608a 100644
+--- a/fetch_tokens.py
++++ b/fetch_tokens.py
+@@ -208,8 +208,15 @@ class MiCloud:
+                        "context": context, "mask": "0", "_locale": "en_US"}
+         send_data = {"retry": "0", "icode": "", "_json": "true",
+                      "ick": self.s.cookies.get("ick", "")}
+-        self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
+-                    params=send_params, data=send_data, headers=h)
++        # [local patch] 原实现丢弃了这两个 POST 的响应，导致失败时无从判断原因
++        r_send = self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
++                             params=send_params, data=send_data, headers=h)
++        try:
++            _send_body = r_send.json()
++        except Exception:
++            _send_body = r_send.text[:300]
++        print(f"[debug] sendEmailTicket -> HTTP {r_send.status_code}  body={_send_body!r}")
++        print(f"[debug] ick cookie present: {bool(self.s.cookies.get('ick', ''))}")
+         code = input("2FA code (check your email): ").strip()
+         verify_params = {"_flag": "8", "_json": "true", "sid": "xiaomiio",
+                          "context": context, "mask": "0", "_locale": "en_US"}
+@@ -217,6 +224,13 @@ class MiCloud:
+                        "ick": self.s.cookies.get("ick", "")}
+         r = self.s.post(f"{ACCOUNT}/identity/auth/verifyEmail",
+                         params=verify_params, data=verify_data, headers=h)
++        # [local patch] 把服务端的原话打出来 —— 它才是「哪个环节不对」的唯一权威来源
++        try:
++            _v_body = r.json()
++        except Exception:
++            _v_body = r.text[:400]
++        print(f"[debug] verifyEmail -> HTTP {r.status_code}  body={_v_body!r}")
++        print(f"[debug] verifyEmail location={r.headers.get('Location')!r}")
+         finish_loc = None
+         try:
+             finish_loc = r.json().get("location")
