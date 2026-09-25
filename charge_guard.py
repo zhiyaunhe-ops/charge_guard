@@ -71,6 +71,17 @@ def pin_utf8() -> None:
 # ---------------------------------------------------------------- 配置
 DEFAULTS = {
     "adb_path": "",
+    "actuator": "miio",
+    "charger_ble": {
+        "python_exe": "",
+        "script": "third_party/xiaomi-ad1204-python/ad1204_ble.py",
+        "token_env": "CHARGER_BLE_TOKEN",
+        "token": "",
+        "address": "",
+        "port": "c1",
+        "timeout_sec": 90,
+        "probe_watch_sec": 5,
+    },
     "phone": {"ip": "", "port_cache_file": "adb_port_cache.json"},
     "scan": {"low": 30000, "high": 50000, "timeout_sec": 0.35, "workers": 600},
     "connect": {
@@ -1117,29 +1128,49 @@ def main() -> int:
     ap.add_argument("--ticks", type=int, default=0, help="跑 N 轮后退出（0=常驻，排错用）")
     ap.add_argument("--self-test", action="store_true", help="桩数据自测，不需要真机与插座")
     ap.add_argument("--probe-plug", action="store_true", help="只读枚举插座属性，定位 siid/piid")
+    ap.add_argument("--actuator", choices=["miio", "ble"], help="执行端：miio=智能插座，ble=充电器端口直控")
+    ap.add_argument("--probe-charger", action="store_true", help="BLE 执行端：连一次充电器并 dump 全部属性")
     args = ap.parse_args()
 
     if args.self_test:
         return self_test()
 
     cfg = load_config(args.config)
+    if args.actuator:
+        cfg["actuator"] = args.actuator
 
     if args.probe_plug:
         return probe_plug(cfg)
 
+    if args.probe_charger:
+        from ble_plug import ChargerBle
+        return ChargerBle(cfg["charger_ble"]).probe()
+
     log = CsvLog(cfg["log"]["csv"], int(cfg["log"]["keep_days"]))
     alerter = Alerter(cfg["alert"])
     adb = AdbLink(cfg, log, alerter)
-    plug = PlugLink(cfg["plug"], log, alerter, dry_run=args.dry_run)
+
+    if cfg["actuator"] == "ble":
+        from ble_plug import ChargerBle
+        plug = ChargerBle(cfg["charger_ble"], dry_run=args.dry_run,
+                          log=lambda m: print(m, flush=True))
+    else:
+        plug = PlugLink(cfg["plug"], log, alerter, dry_run=args.dry_run)
 
     if not plug.configured():
-        print("⚠️ 插座未配置（plug.ip / token / siid / piid 有空）——本次将只读数、不控电。\n"
-              "   属性探测方法见 README「插座属性探测」。", flush=True)
+        if cfg["actuator"] == "ble":
+            print("⚠️ BLE 执行端未配置（缺 token）——本次将只读数、不控电。\n"
+                  "   1) 取 token：cd third_party/xiaomi-ad1204-python && python fetch_tokens.py --region cn\n"
+                  "   2) 填进环境变量 CHARGER_BLE_TOKEN（或 charge_guard.json 的 charger_ble.token）\n"
+                  "   3) 可用 --probe-charger 先验一遍通路", flush=True)
+        else:
+            print("⚠️ 插座未配置（plug.ip / token / siid / piid 有空）——本次将只读数、不控电。\n"
+                  "   属性探测方法见 README「插座属性探测」。", flush=True)
 
     guard = Guard(cfg, adb, plug, log, alerter, dry_run=args.dry_run)
-    print(f"charge_guard 启动：ip={cfg['phone']['ip']} stop_at={cfg['policy']['stop_at']} "
-          f"resume_at={cfg['policy']['resume_at']} 间隔={cfg['loop']['interval_sec']}s "
-          f"dry_run={args.dry_run}", flush=True)
+    print(f"charge_guard 启动：执行端={cfg['actuator']} ip={cfg['phone']['ip']} "
+          f"stop_at={cfg['policy']['stop_at']} resume_at={cfg['policy']['resume_at']} "
+          f"间隔={cfg['loop']['interval_sec']}s dry_run={args.dry_run}", flush=True)
     guard.run(ticks=args.ticks or (1 if args.once else 0))
     return 0
 

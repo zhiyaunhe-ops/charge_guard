@@ -198,6 +198,57 @@ daemon 被回收、沙箱杀子进程……**全部不再需要**，因为读端
 
 ---
 
+## 六、最终决定：不买硬件，PC 用自带蓝牙直连（2026-09-25 收尾）
+
+Luna 明确「不想买」。于是回到路径 A 的**纯软件形态**：PC 的蓝牙适配器已验证可用
+（`is_low_energy_supported` / `is_central_role_supported` = True，监听器 STARTED、无 abort），
+第三方实现已克隆并**在本机 Windows 上跑通 `--help`**，所以不需要任何新硬件。
+
+### 已核实的协议细节（两个仓库交叉确认，不再是猜测）
+
+| 项 | 值 | 出处 |
+|---|---|---|
+| 端口开关属性 | `siid=2, piid=16`，4 位掩码 | `cuktech-ble-ha/ble_server/ble_manager.py`：`ctrl.send_miot_command(2, 16, value=new_val)` |
+| 位定义 | `c1=bit0, c2=bit1, c3=bit2, a=bit3` | `ble_server/state.py`：`PORT_BITS = {"c1":0,"c2":1,"c3":2,"a":3}` |
+| 全开/全关 | `0x0F` / `0x00` | `ble_manager.py` 的 `_handle_port_command` |
+| 其他可写属性 | 场景模式（2-5）、息屏（2-6）、语言（2-13）、亮度（2-14）、协议扩展（2-21） | `xiaomi-ad1204-python/ad1204_ble.py` 的 `LABELS` / `ENUMS` |
+
+### 已实现
+
+- `ble_plug.py` —— 执行端，接口对齐原来的 `PlugLink`（`configured()/set_power()/read_power_w()`）。
+  不重写协议，调用 vendored 的 `ad1204_ble.py`；**先读掩码再改目标位**，不误动其他口；
+  一次连接内完成「写 → 回读 → 确认」。
+- `charge_guard.py` 新增 `--actuator {miio,ble}` 与 `--probe-charger`；缺 token 时优雅降级为只读。
+  自测仍 54/54。
+- 干跑已通：读 ADB（level 95 / 26.7℃ / AC false）→ 判定 off → BLE 执行端 dry-run 输出。
+
+**注：干跑时手机已经 95%** —— 因为一直没有任何东西管它，它就一路充上去了。
+这正好说明为什么需要这套东西。
+
+### 剩下的一步（只能 Luna 本人做）
+
+```bash
+cd third_party/xiaomi-ad1204-python
+python fetch_tokens.py --region cn     # 登录小米账号（可能走 2FA/图形码）
+```
+
+拿到 `address` + `token` 后注入环境变量 `CHARGER_BLE_TOKEN`，然后：
+`--probe-charger` → `--dry-run` → 正式。
+
+### 仍然要先验的生死题
+
+**关掉 C1 之后充电器还广播吗？** 若它没别的负载就息屏停播，会出现「关得掉、开不回来」。
+验法：`--probe-charger` 看到掩码 → 关 C1 → 等 5 分钟 → 再 `--probe-charger`。
+**在验掉这条之前，不让它无人值守地真控电。**
+
+### 路线 1（手机 + ESP32）怎么办
+
+已经做完的手机侧（`phone/`，Termux 脚本 + 三件套已装）**保留但不启用** ——
+它的价值在于把读端也搬进手机、彻底摆脱 ADB 与 PC；哪天想上这个形态，ESP32 是唯一要买的东西。
+现在不必买。
+
+---
+
 ## 参考
 
 - `ohaiibuzzle/xiaomi-ad1204-python` — https://github.com/ohaiibuzzle/xiaomi-ad1204-python

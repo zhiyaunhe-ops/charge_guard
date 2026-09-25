@@ -15,8 +15,10 @@
 | `dumpsys battery` 解析 | ✅ **真机验证通过**（含温度 0.1℃ 换算、AC powered） |
 | 判定逻辑（65/50 滞回、温度、稳定性门、失联分级） | ✅ 桩数据自测 **54 项全通过**（`--self-test`） |
 | 真机 dry-run 全链路 | ✅ 通过，记录见 `dryrun-real-device.txt` |
-| **插座通断指令（python-miio）** | ⛔ **未验证** —— 缺 `plug.token` 与真机 `siid/piid` |
+| **BLE 执行端（直控充电器 C1 口）** | 🟡 **代码就绪，未真机验证** —— 缺 token（需本人登录小米云）；缺 token 时会优雅降级为只读 |
 | **断电后的 `AC powered` 回读** | ⛔ **未验证** —— dry-run 没真正断电 |
+| 端口掩码写入并回读确认 | 🟡 逻辑已实现（`ble_plug.py::set_power`），待真机验 |
+| ~~插座通断指令（python-miio）~~ | ⏸ 已放弃该路线：不需要买插座，改用 BLE 直控 |
 | 告警通道（webhook / smtp） | ⛔ **未验证** —— 当前配置是 `console` |
 | 跨天汇总、日志裁剪、300s 正式间隔 | ⛔ **未验证** —— 只在 3s 间隔下跑过几轮 |
 
@@ -188,6 +190,68 @@ pythonw.exe charge_guard.py
 ⚠️ **Windows 上要注意**：把 `adb connect` 与后续操作写在同一条命令里的做法，
 在交互式会话里没问题；但计划任务里 adb daemon 的生命周期由任务决定 ——
 本脚本每轮都会自己 `ensure_session()`，不做常驻连接，所以这点是安全的。
+
+---
+
+## 执行端：BLE 直控充电器 C1 口（**不需要买任何硬件**）
+
+原来的设计假设执行端是一个小米智能插座。实际上**这台充电器自己就能按口开关**，
+而且它的 BLE 协议已有开源实现 —— 所以 PC 用**自带蓝牙适配器**直接连它就行，
+不用买插座、也不用买 ESP32。
+
+### 协议要点（来自两个开源实现，交叉确认）
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| 端口开关属性 | `siid=2, piid=16`，值是 4 位掩码 | `cuktech-ble-ha/ble_server/ble_manager.py`：`send_miot_command(2, 16, value=new_val)` |
+| 位定义 | `c1=bit0, c2=bit1, c3=bit2, a=bit3` | 同仓库 `state.py`：`PORT_BITS = {"c1":0,"c2":1,"c3":2,"a":3}` |
+| 全开 / 全关 | `0x0F` / `0x00` | 同仓库 `ble_manager.py` |
+| 登录凭据 | 设备 token（**12 字节 hex = 24 字符**） | 两个实现的 README |
+
+`ble_plug.py` 不重复实现协议，而是调用 vendored 的
+`third_party/xiaomi-ad1204-python/ad1204_ble.py`（MIT，已真机验证过的实现）。
+**每次下发都会先读当前掩码再改目标位**，不会误动其他口；
+且同一次连接里完成「写 → 回读全部属性 → 确认」，省一次 BLE 往返。
+
+### 一次性准备
+
+```bash
+# 1) 拉第三方实现（不进版本库，见 .gitignore）
+git clone https://github.com/ohaiibuzzle/xiaomi-ad1204-python.git third_party/xiaomi-ad1204-python
+
+# 2) 装依赖（用托管 venv，别污染系统环境）
+C:/Users/zhiya/.workbuddy/binaries/python/envs/default/Scripts/python.exe \
+  -m pip install cryptography pycryptodome rich colorama
+
+# 3) 取 token —— 这一步只能你本人做（要登录小米账号，可能走 2FA/图形码）
+cd third_party/xiaomi-ad1204-python
+python fetch_tokens.py --region cn
+#   输出里找 njcuk.fitting.ad1204 那一条，抄下 address 与 token
+
+# 4) 注入凭据（不进 git）
+export CHARGER_BLE_TOKEN=<24位hex>
+#   Windows PowerShell:  $env:CHARGER_BLE_TOKEN = "<24位hex>"
+#   并把 address 填进 charge_guard.json 的 charger_ble.address
+```
+
+### 验证顺序（别跳步）
+
+```bash
+python -X utf8 charge_guard.py --probe-charger          # 连一次，dump 全部属性，确认掩码能解析
+python -X utf8 charge_guard.py --actuator ble --dry-run --ticks 3
+python -X utf8 charge_guard.py --actuator ble           # 正式
+```
+
+### ⚠️ 三个必须知道的坑
+
+1. **充电器一次只接受一个 BLE 连接** —— 用脚本时**手机上的米家 App 必须关掉**，
+   否则两边互相挤。反之手机打开米家，脚本会连不上。
+2. **充电器息屏会停止广播** —— 那时脚本连不上（`--probe-charger` 会超时）。
+   让它有负载/屏幕亮着即可。
+3. **「关掉 C1 之后还连不连得上」必须先实测。** 如果关掉 C1 后没有别的负载、
+   充电器进入空闲息屏并停播，就会出现「**关得掉、开不回来**」。
+   实测方法：`--probe-charger` 看到掩码 → 关掉 C1 → 等 5 分钟 → 再 `--probe-charger`。
+   **在验掉这条之前，不要让它无人值守地真控电。**
 
 ---
 

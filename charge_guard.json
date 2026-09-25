@@ -1,6 +1,23 @@
 {
   "_comment": "charge_guard 配置。改完重启脚本生效。所有阈值都可追溯，见 charge-strategy-review.md。",
 
+  "actuator": "ble",
+  "_comment_actuator": "ble = 充电器端口直控（C1 口，不需要额外硬件）；miio = 小米智能插座。",
+
+  "charger_ble": {
+    "python_exe": "C:\\Users\\zhiya\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe",
+    "script": "third_party/xiaomi-ad1204-python/ad1204_ble.py",
+    "token_env": "CHARGER_BLE_TOKEN",
+    "token": "",
+    "address": "",
+    "port": "c1",
+    "timeout_sec": 90,
+    "probe_watch_sec": 5,
+    "_comment": "⚠️ token 是密钥：用环境变量 CHARGER_BLE_TOKEN 注入，不要写进 git。",
+    "_comment2": "address 填充电器 MAC（fetch_tokens.py 会给）；不填则靠扫描，但 Windows 扫描实测不可靠，建议填。",
+    "_comment3": "端口掩码：siid=2 piid=16，c1=bit0 / c2=bit1 / c3=bit2 / a=bit3。"
+  },
+
   "adb_path": "D:\\MuMuPlayer-12.0\\nx_main\\adb.exe",
 
   "phone": {
