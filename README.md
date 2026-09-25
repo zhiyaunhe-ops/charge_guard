@@ -130,25 +130,42 @@ touch full_charge.once      # Windows: type nul > full_charge.once
 
 ---
 
-## 插座属性探测（唯二剩下的卡点之一）
+## 插座属性探测（2026-09-25 起：这是主路径）
 
-ZNCZ401KK 是较新型号，`python-miio` 可能没有专用类，所以脚本**不预设任何 siid/piid 编号**。
+**双击两个入口就能走完这一步**（不用敲命令）：
+
+| 入口 | 做什么 |
+|---|---|
+| `run_miiocli_cloud.bat` | 登录小米云，列出所有设备的 **ip + token**（插座的抄下来） |
+| `run_probe_plug.bat` | 只读枚举插座属性表，确认 `siid/piid` |
+
+放凭据：**ip** 进 `charge_guard.json` 的 `plug.ip`；**token** 进 `charge_guard.local.json`
+（已在 `.gitignore`；别提交、别贴到公开地方）。
+
+米家智能插座3（`cuco.plug.v3`）的预期编号 —— 探测后核对：
+
+| 用途 | siid/piid | 填到 |
+|---|---|---|
+| 开关 | `2 / 1`（bool） | `plug.on_siid` / `plug.on_piid` |
+| 实时功率 | `11 / 2`（W） | `plug.power_siid` / `plug.power_piid` |
+| 累计电量 | `11 / 1`（0.01 kWh） | 只读，不必填 |
+
+⚠️ 买插座必须选 **Wi-Fi 版（miOT 局域网可控）**，不要蓝牙 Mesh 版。
+
+命令行等价写法（脚本**不预设任何 siid/piid**，一律以真机探测为准）：
 
 ```bash
-pip install -U python-miio
-# 若认不出这款插座，装开发版：
-pip install git+https://github.com/rytilahti/python-miio.git
-
-miiocli cloud                 # 输小米账号 → 列出所有设备的 IP 与 token
+pip install -U python-miio      # 已装进项目 venv
+miiocli cloud                   # 输小米账号 → 列出所有设备的 IP 与 token
 ```
 
-把 IP/token 填进 `charge_guard.json` 的 `plug.ip` / `plug.token`，然后：
+填好 ip/token 后：
 
 ```bash
 python -X utf8 charge_guard.py --probe-plug
 ```
 
-它只读枚举 siid 1–10 × piid 1–10，**不发任何写指令**（不会把插座切来切去）。
+它只读枚举 siid 1–16 × piid 1–16，**不发任何写指令**（不会把插座切来切去）。
 认法：布尔值 → 大概率是开关，填 `plug.on_siid` / `on_piid`；带小数的数值 → 功率，填 `power_siid` / `power_piid`。
 
 ### ⚠️ token 是密钥，不要提交进 git
