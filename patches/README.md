@@ -16,19 +16,25 @@
 - 回滚：`git -C third_party/xiaomi-ad1204-python checkout -- fetch_tokens.py`
 - 已验证：
   - 对上游原始文件 `git apply --check` 通过，应用后与本地工作文件逐字节一致（roundtrip）；
-  - `patches/test_fetch_tokens_2fa_offline.py` 用假 session 离线跑三条分支，
-    **3/3 通过**（手机号分支走 `verifyPhone` 且不发邮件；邮箱分支走 `verifyEmail`；
-    码被拒时报明确文案而不是「密码错误」）：
+  - `patches/test_fetch_tokens_2fa_offline.py` 用假 session 离线跑四条分支，
+    **4/4 通过**（手机号分支走 `verifyPhone` 且不发邮件；邮箱分支走 `verifyEmail`；
+    码被拒时报明确文案而不是「密码错误」；stdin 是终端时走手输、不碰文件）：
     ```bash
     C:/Users/zhiya/.workbuddy/binaries/python/envs/default/Scripts/python.exe -X utf8 patches/test_fetch_tokens_2fa_offline.py
     ```
 
 本补丁包含四处改动，按发现顺序：
 
-### 1. 非交互输入（`wait_for_input_file`）
+### 1. 交互输入：手输为主，文件兜底（`wait_for_input`）
 
-`captcha code` 与 `2FA code` 原本走 `input()`，非交互驱动方（双击的 .bat / 自动化）给不出 stdin。
-改为轮询 `plugin_out/*.txt`：驱动方看到「在等什么」→ 把值写进文件 → 流程继续（取到即删，默认 600s 超时）。
+`captcha code` 与验证码原本只有 `input()`（人跑没问题，自动化给不出 stdin）。
+现在**两种都支持**，按 stdin 是不是终端（`isatty`）自动选：
+
+- **人跑**（双击 .bat）→ 直接在这个窗口手输，和上游原行为一致；
+- **自动化 / agent 跑** → 轮询 `plugin_out/*.txt`：看到「在等什么」→ 把值写进文件 → 流程继续
+  （取到即删，默认 600s 超时）。手输了空值/EOF 也会自动落回文件模式。
+
+要强制可以设环境变量 `MI_INPUT=tty` 或 `MI_INPUT=file`。
 
 ### 2. 诊断输出（不再丢弃服务端响应）
 

@@ -17,6 +17,9 @@ spec = importlib.util.spec_from_file_location("fetch_tokens", SCRIPT)
 ft = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ft)
 
+# 前三条用例固定走文件模式（否则在终端里跑测试会 block 在 input()）；第四条单独测手输模式
+ft.INPUT_MODE = "file"
+
 context_url = "https://account.xiaomi.com/fe/service/identity/authStart?sid=xiaomiio&context=CTX&callback=x"
 
 
@@ -154,6 +157,54 @@ def run_case(name, flag_options, verify_body, expect_exit=False, expect_verify=N
     return status == "PASS"
 
 
+def run_tty_case(name, typed="654321"):
+    """手输模式：stdin 是终端 → 用 input() 取值，不依赖任何文件。"""
+    import builtins
+    sess = FakeSession([])
+    sess.handlers = base_handlers(
+        {"flag": 4, "options": [4]},
+        {"code": 0, "location": "https://account.xiaomi.com/identity/result/check?sid=xiaomiio&context=CTX"},
+        sess)
+    mc = ft.MiCloud()
+    mc.s = sess
+    sess.cookies.set("identity_session", "IDSESS")
+    code_path = os.path.join(ft.OUTDIR, "2fa_code.txt")
+    if os.path.exists(code_path):          # 先删掉，证明成功不是文件兜底给的
+        os.remove(code_path)
+
+    class FakeTTY:
+        def isatty(self):
+            return True
+
+    prompts, old = [], (sys.stdin, builtins.input, ft.INPUT_MODE)
+    sys.stdin = FakeTTY()
+    builtins.input = lambda prompt="": (prompts.append(prompt), typed)[1]
+    ft.INPUT_MODE = "auto"
+    try:
+        ok = bool(mc._2fa(context_url))
+    finally:
+        sys.stdin, builtins.input, ft.INPUT_MODE = old
+
+    called = [(m, u) for m, u, _ in sess.calls]
+    problems = []
+    if not ok:
+        problems.append("手输模式没能完成 _2fa")
+    if not any("verifyPhone" in u for _, u in called):
+        problems.append(f"没走 verifyPhone；calls={called}")
+    if not prompts or "SMS" not in prompts[0]:
+        problems.append(f"提示语没有告诉用户看短信：{prompts!r}")
+    for m, u, kw in sess.calls:
+        if "verifyPhone" in u and (kw.get("data") or {}).get("ticket") != typed:
+            problems.append(f"用的不是手输的值：{(kw.get('data') or {})!r}")
+    if os.path.exists(code_path):
+        problems.append("手输模式不该去读/写 2fa_code.txt")
+
+    print(f"[{'PASS' if not problems else 'FAIL'}] {name}")
+    for p in problems:
+        print("        -", p)
+    return not problems
+
+
 results = [
     run_case("手机号账号（options:[4]）→ 走 verifyPhone 成功",
              {"flag": 4, "options": [4]},
@@ -167,6 +218,7 @@ results = [
              {"flag": 4, "options": [4]},
              {"code": 2, "flag": 4, "options": [4], "version": "v2"},
              expect_exit=True),
+    run_tty_case("人手输模式（stdin 是终端）→ 直接敲码，不碰文件"),
 ]
 
 print()

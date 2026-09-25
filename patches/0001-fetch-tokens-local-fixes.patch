@@ -10,7 +10,7 @@ index bd94291..9b9a56c 100644
 +# local state: 固定客户端身份（UA/deviceId），非密钥但属于本机状态
 +xiaomi.client.json
 diff --git a/fetch_tokens.py b/fetch_tokens.py
-index 5c7e96c..6bc2ff6 100644
+index 5c7e96c..af1910c 100644
 --- a/fetch_tokens.py
 +++ b/fetch_tokens.py
 @@ -27,6 +27,7 @@ ACCOUNT = "https://account.xiaomi.com"
@@ -21,17 +21,32 @@ index 5c7e96c..6bc2ff6 100644
  
  # Login is account-wide; home/device data lives on one specific regional
  # server that doesn't have to match the device's model region. When --region
-@@ -64,6 +65,34 @@ def rc4_dec(key_b64: str, payload: str) -> bytes:
+@@ -64,6 +65,49 @@ def rc4_dec(key_b64: str, payload: str) -> bytes:
  
  
  # ----------------------------------------------------------------- captcha server
-+def wait_for_input_file(path, prompt, timeout=600):
-+    """[local patch] 从文件等待一个输入值，代替 input()。
++INPUT_MODE = os.environ.get("MI_INPUT", "auto").strip().lower()   # auto | tty | file
 +
-+    为什么需要：这个流程有两处交互输入（图形验证码、邮件 2FA 码），而
-+    非交互式的驱动方（自动化/agent）给不出 stdin。改成轮询文件之后，
-+    驱动方可以「看到拦在等什么 → 把值写进文件 → 流程继续」。
++
++def wait_for_input(path, prompt, timeout=600):
++    """[local patch] 取一个交互输入值：能问人就问人，问不了才等文件。
++
++    为什么两种都要：
++      - 人跑（双击 .bat）→ 直接手输最省事，这也正是上游原来的 input() 行为；
++      - 自动化 / agent 跑 → 给不出 stdin，于是约定「看到拦在等什么 → 把值写进文件」。
++    判定：stdin 是不是终端（isatty）。要强制可以设环境变量 MI_INPUT=tty 或 MI_INPUT=file。
 +    """
++    mode = INPUT_MODE
++    if mode == "auto":
++        mode = "tty" if (sys.stdin and sys.stdin.isatty()) else "file"
++    if mode == "tty":
++        try:
++            val = input(prompt).strip()
++        except EOFError:
++            val = ""
++        if val:
++            return val
++        print("[i] 手输为空（stdin 可能被重定向了），改为等文件", flush=True)
 +    print(prompt, flush=True)
 +    print(f"[wait] 等待值写入 {path}（最长 {timeout}s）", flush=True)
 +    end = time.time() + timeout
@@ -56,12 +71,12 @@ index 5c7e96c..6bc2ff6 100644
  def serve_captcha(image: bytes, stop: threading.Event):
      class H(BaseHTTPRequestHandler):
          def do_GET(self):
-@@ -84,19 +113,44 @@ def serve_captcha(image: bytes, stop: threading.Event):
+@@ -84,19 +128,44 @@ def serve_captcha(image: bytes, stop: threading.Event):
          f.write(image)
      print(f"[!] CAPTCHA required. Open http://127.0.0.1:{CAPTCHA_PORT} in a browser "
            f"(image also saved to {path}), solve it, then enter the code.")
 -    code = input("captcha code (case-sensitive): ").strip()
-+    code = wait_for_input_file(os.path.join(OUTDIR, "captcha_code.txt"),
++    code = wait_for_input(os.path.join(OUTDIR, "captcha_code.txt"),
 +                               "captcha code (case-sensitive): ")
      stop.set()
      srv.shutdown()
@@ -106,7 +121,7 @@ index 5c7e96c..6bc2ff6 100644
          self.s = requests.Session()
          self.s.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="mi.com")
          self.s.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="xiaomi.com")
-@@ -115,6 +169,8 @@ class MiCloud:
+@@ -115,6 +184,8 @@ class MiCloud:
      def login(self, username, password):
          self.username, self.password = username, password
          print(f"[*] logging in to Xiaomi account {username}")
@@ -115,7 +130,7 @@ index 5c7e96c..6bc2ff6 100644
          if not self._login_step_1():
              sys.exit("[-] invalid username (step 1)")
          if not self._login_step_2():
-@@ -188,7 +244,7 @@ class MiCloud:
+@@ -188,7 +259,7 @@ class MiCloud:
              self.pass_token, self.location = js.get("passToken"), js.get("location")
              return True
          if js.get("notificationUrl"):
@@ -124,7 +139,7 @@ index 5c7e96c..6bc2ff6 100644
          print(f"[-] login_step_2 returned: {js}")
          return False
  
-@@ -197,26 +253,69 @@ class MiCloud:
+@@ -197,26 +268,69 @@ class MiCloud:
          self.serviceToken = r.cookies.get("serviceToken")
          return r.status_code == 200 and self.serviceToken
  
@@ -188,7 +203,7 @@ index 5c7e96c..6bc2ff6 100644
 +        else:
 +            # 短信通道：验证码由 authStart 触发自动下发，没有对应的主动 send 调用
 +            prompt = "SMS code （手机收到的短信验证码，不是邮箱里的）: "
-+        code = wait_for_input_file(os.path.join(OUTDIR, "2fa_code.txt"), prompt)
++        code = wait_for_input(os.path.join(OUTDIR, "2fa_code.txt"), prompt)
 +        verify_params = {"_dc": str(int(time.time() * 1000))}
 +        verify_data = {"_flag": str(flag), "ticket": code, "trust": "false", "_json": "true"}
 +        r = self.s.post(f"{ACCOUNT}/identity/auth/{verify_api}",
