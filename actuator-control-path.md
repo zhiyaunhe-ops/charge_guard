@@ -145,7 +145,7 @@ Luna 问「为什么我 K70 Pro 都能轻易连上？」—— 关键在于**两
 | 2 | **关掉 C1 后充电器还广播吗** | 我测 | 路径 A 是否有致命缺陷 |
 | 3 | 其他 3 个口现在插着什么 | Luna | 路径 B 是否可用 |
 | 4 | 有没有智能插座（ZNCZ401KK 或别的） | Luna | 路径 B 的硬件前提 |
-| 5 | 要不要上 ESP32 桥 | Luna | 路径 A 的稳健形态 |
+| 5 | **走哪条路线**（第五节四条） | Luna 定 | 全部后续工作 |
 
 ---
 
@@ -154,6 +154,46 @@ Luna 问「为什么我 K70 Pro 都能轻易连上？」—— 关键在于**两
 | `ble_probe.py` | BLE 探测：适配器能力 → 监听器状态 → 广播扫描，逐行落盘 |
 | `run_ble_probe.bat` | 双击入口（CRLF / ANSI / 纯 ASCII 文件名），跑完自动打印报告 |
 | `ble_probe_report.txt` | 运行产物（已 gitignore，不进版本库） |
+
+---
+
+## 五、能不能整套搬到 K70 上跑？—— 能，但有一个硬约束
+
+**硬约束：Android 上跑 BLE 不能走 Termux + pip。**
+Termux 里没有 BlueZ / D-Bus，`pip install bleak` 拿不到蓝牙后端。
+bleak **确实有** Android 后端（`bleak.backends.android`，2026 年新增），
+但它基于 **Chaquopy / python-for-android** —— 也就是**必须把 Python 代码打包成 APK 装进手机**，
+不是在 Termux 里跑脚本。构建 python-for-android 要在 Linux / WSL / Docker 里做。
+
+⇒ 一句话：**「手机当大脑」很容易，「手机自己发 BLE」很难。** 这个不对称决定了路线。
+
+### 四条路线
+
+| 路线 | 手机当大脑 | 只切 C1 | 额外硬件 | 工作量 |
+|---|---|---|---|---|
+| **1. 手机 + ESP32 桥（推荐）** | ✅ Termux 纯 Python | ✅ | ESP32 ￥20–40 | **小** |
+| 2. 手机 + 智能插座 | ✅ Termux 纯 Python | ❌ 断整机 | 智能插座 ￥59 | 最小 |
+| 3. 手机裸跑 BLE（打包 APK） | ✅ | ✅ | 无 | **大** |
+| 4. 维持现状（PC 全包） | ❌ 依赖 PC 常开且近 | ✅ | 无 | 已完成大半 |
+
+**路线 1 的形态**：ESP32 放在充电器旁边，BLE 连它，对外暴露 HTTP / MQTT。
+手机 Termux 里读自己的电量（`termux-battery-status`）+ 决策 + 调 ESP32 的 HTTP。
+
+这条路的价值不只是"搬到手机上"——它把前面写的一整堆东西**删掉**：
+ADB 无线调试的端口三层兜底、`adb connect` 后 shell 未就绪的空读数、
+daemon 被回收、沙箱杀子进程……**全部不再需要**，因为读端和执行端都不出手机。
+而且仍然只切 C1 口，不碰 220V，没有对充电器电源的上电冲击。
+
+📄 `kairui1108/cuktech-ble-ha` 的 README 指向一个 `cuktech-ble-esp32` 固件仓库
+（支持 ESP32 / S3 / C3，AP 配网 + Web 仪表盘 + HTTP OTA）。**我还没核实该固件仓库的实际内容。**
+
+**路线 3 的代价**（如果不想买任何硬件）：
+协议不用重写 —— `ohaiibuzzle` 的 `ad1204_ble.py` 是现成的 Python 实现，可以直接复用。
+但要把 Python + bleak 打成 APK，得在 Linux/WSL 里跑 python-for-android，拉 Android SDK/NDK（数 GB），
+首次构建耗时长；且手机侧同样要先拿到 token / BLE key。
+
+**路线 2 的注意点**：断插座 = 整个充电器断电（其他口一起断），
+且每次通断是对 120W 电源的一次上电冲击。虽然最简单，但它牺牲的正是 Luna 最在意的"只切第一个口"。
 
 ---
 
