@@ -16,6 +16,7 @@ charger_probe_report.txt
 
 # 密钥：插座 token 用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入
 charge_guard.local.json
+phone/charge_guard_phone.local.json
 .env
 
 # 第三方实现：各自有自己的 git 仓库，不 vendored 进来（克隆方式见 README）

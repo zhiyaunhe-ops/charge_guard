@@ -3,7 +3,7 @@
 """
 charge_guard_phone.py —— 跑在 K70 Pro 上（Termux）的「大脑」
 
-为什么把它搬到手机上：手机就贴在充电器上，读端（自己的电量）和执行端（经 ESP32 转 BLE）
+为什么把它搬到手机上：手机就放在充电器旁边，读端（自己的电量）和执行端（局域网控插座）
 都不出手机。于是 charge_guard.py 里那一整堆东西不再需要：
   · 无线调试端口的缓存/mDNS/扫描三层兜底
   · `adb connect` 之后 shell 未就绪返回空字符串的假在线
@@ -12,7 +12,7 @@ charge_guard_phone.py —— 跑在 K70 Pro 上（Termux）的「大脑」
 
 链路：
     本机电量 ──(termux-battery-status)──┐
-                                        ├─► 判定（65/50 滞回 + 温度 + 稳定门）──► HTTP ──► ESP32 ──BLE──► 充电器 C1 口
+                                        └─► 判定（65/50 滞回 + 温度 + 稳定门）──► miIO/UDP ──► 智能插座 ──220V──► 充电器
     留作唯一真相源：charge_guard.py     ┘
 
 依赖：**只有 Python 标准库**（urllib 就够了，不需要 pip 装任何东西）。
@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -39,14 +42,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 DEFAULTS = {
-    "esp32": {
-        "base_url": "http://192.168.1.50",
-        "status_path": "/api/status",
-        "port_path": "/api/port?port={port}&state={state}",
-        "port": "c1",
-        "timeout_sec": 8,
-        "on_value": "1",
-        "off_value": "0",
+    "plug": {
+        # 小米智能插座（miIO over LAN，UDP 54321）。token 是密钥，放本机覆盖层，别进 git。
+        # siid/piid 已按真机（cuco.plug.v3 @192.168.0.99）验证：开关 2/1、功率 11/2、故障 2/3。
+        "ip": "192.168.0.99",
+        "token": "",
+        "on_siid": 2, "on_piid": 1,
+        "power_siid": 11, "power_piid": 2,
+        "fault_siid": 2, "fault_piid": 3,
+        "timeout_sec": 4.0,
+        "udp_port": 54321,
+        "label": "充电器插座",
     },
     "policy": {
         "stop_at": 65,
@@ -78,6 +84,12 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def load_config(path: str) -> dict:
     cfg = _deep_merge(DEFAULTS, json.loads(Path(path).read_text(encoding="utf-8")))
+    # 本机覆盖层（不进 git）：插座 token 放这里，受版本控制的配置保持干净。
+    # 约定：<配置名>.local.json，只写要覆盖的键（charge_guard_phone.json → charge_guard_phone.local.json）
+    p = Path(path)
+    local = p.with_name(p.stem + ".local.json")
+    if local.exists():
+        cfg = _deep_merge(cfg, json.loads(local.read_text(encoding="utf-8")))
     p = cfg["policy"]
     if not (0 <= p["resume_at"] < p["stop_at"] <= 100):
         raise ValueError(f"配置非法：要求 0 <= resume_at({p['resume_at']}) < stop_at({p['stop_at']}) <= 100")
@@ -128,82 +140,290 @@ def read_battery() -> tuple[dict | None, str]:
     }, ""
 
 
-# ---------------------------------------------------------------- 执行端（ESP32）
-class Esp32Link:
-    """
-    ESP32 固件（kairui1108/cuktech-ble-esp32）自带零依赖 Web 面板与 REST 接口。
-    ⚠️ 确切的接口路径以你烧进去那版固件的源码 / 面板请求为准 —— 所以路径做成配置项，
-       并用 --probe 逐个试探候选。
-    """
+# ---------------------------------------------------------------- 执行端（小米智能插座）
+# ================================================================ miIO 协议层（纯标准库）
+# 为什么自己实现：手机上（Termux）装 python-miio / cryptography 都可能踩坑，
+# 而这一段只用标准库的 hashlib/socket/json/struct —— 手机上只需要 Termux 自带的 python。
+# 正确性证据（2026-09-25 在 PC 上验证）：
+#   · AES 与 `cryptography` 对拍：300 组加密 + 300 组解密，**零差异**；
+#   · 对真机插座完成握手与读属性（开关/功率/故障都读到了）。
+HELLO = bytes.fromhex("21310020" + "ff" * 28)
 
-    CANDIDATE_PORT_PATHS = [
-        "/api/port?port={port}&state={state}",
-        "/api/port?{port}={state}",
-        "/api/set?port={port}&value={state}",
-    ]
-    CANDIDATE_STATUS_PATHS = ["/api/status", "/api/data", "/api"]
+
+def _xtime(a: int) -> int:
+    a <<= 1
+    return (a ^ 0x1B) & 0xFF if a & 0x100 else a
+
+
+def _gmul(a: int, b: int) -> int:
+    p = 0
+    for _ in range(8):
+        if b & 1:
+            p ^= a
+        a = _xtime(a)
+        b >>= 1
+    return p
+
+
+def _rotl8(x: int, n: int) -> int:
+    return ((x << n) | (x >> (8 - n))) & 0xFF
+
+
+def _build_sbox() -> list:
+    """S-box 按定义生成（GF(2^8) 求逆 + 仿射变换）——手抄 256 字节必然出错。"""
+    out = []
+    for i in range(256):
+        inv, base, e = 1, i, 254
+        while e:
+            if e & 1:
+                inv = _gmul(inv, base)
+            base = _gmul(base, base)
+            e >>= 1
+        out.append(inv ^ _rotl8(inv, 1) ^ _rotl8(inv, 2) ^ _rotl8(inv, 3) ^ _rotl8(inv, 4) ^ 0x63)
+    return out
+
+
+_SBOX = _build_sbox()
+_INV_SBOX = [0] * 256
+for _i, _v in enumerate(_SBOX):
+    _INV_SBOX[_v] = _i
+_RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36]
+
+
+def _expand_key(key: bytes) -> list:
+    if len(key) != 16:
+        raise ValueError("AES-128 需要 16 字节密钥")
+    w = [list(key[i * 4:i * 4 + 4]) for i in range(4)]
+    for i in range(4, 44):
+        t = list(w[i - 1])
+        if i % 4 == 0:
+            t = [_SBOX[b] for b in (t[1:] + t[:1])]
+            t[0] ^= _RCON[i // 4 - 1]
+        w.append([w[i - 4][j] ^ t[j] for j in range(4)])
+    return [sum(w[4 * r:4 * r + 4], []) for r in range(11)]
+
+
+def _encrypt_block(rk: list, block: bytes) -> bytes:
+    s = [block[i] ^ rk[0][i] for i in range(16)]
+    for rnd in range(1, 11):
+        s = [_SBOX[b] for b in s]
+        s = [s[(i + 4 * (i % 4)) % 16] for i in range(16)]      # ShiftRows
+        if rnd != 10:
+            t = []
+            for c in range(4):
+                col = s[4 * c:4 * c + 4]
+                t += [_gmul(col[0], 2) ^ _gmul(col[1], 3) ^ col[2] ^ col[3],
+                      col[0] ^ _gmul(col[1], 2) ^ _gmul(col[2], 3) ^ col[3],
+                      col[0] ^ col[1] ^ _gmul(col[2], 2) ^ _gmul(col[3], 3),
+                      _gmul(col[0], 3) ^ col[1] ^ col[2] ^ _gmul(col[3], 2)]
+            s = t
+        s = [s[i] ^ rk[rnd][i] for i in range(16)]
+    return bytes(s)
+
+
+def _decrypt_block(rk: list, block: bytes) -> bytes:
+    s = [block[i] ^ rk[10][i] for i in range(16)]
+    for rnd in range(9, -1, -1):
+        s = [s[(i - 4 * (i % 4)) % 16] for i in range(16)]       # InvShiftRows
+        s = [_INV_SBOX[b] for b in s]
+        s = [s[i] ^ rk[rnd][i] for i in range(16)]
+        if rnd != 0:
+            t = []
+            for c in range(4):
+                col = s[4 * c:4 * c + 4]
+                t += [_gmul(col[0], 14) ^ _gmul(col[1], 11) ^ _gmul(col[2], 13) ^ _gmul(col[3], 9),
+                      _gmul(col[0], 9) ^ _gmul(col[1], 14) ^ _gmul(col[2], 11) ^ _gmul(col[3], 13),
+                      _gmul(col[0], 13) ^ _gmul(col[1], 9) ^ _gmul(col[2], 14) ^ _gmul(col[3], 11),
+                      _gmul(col[0], 11) ^ _gmul(col[1], 13) ^ _gmul(col[2], 9) ^ _gmul(col[3], 14)]
+            s = t
+    return bytes(s)
+
+
+def aes_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    rk = _expand_key(key)
+    pad = 16 - (len(data) % 16)
+    data = data + bytes([pad]) * pad
+    out, prev = b"", iv
+    for i in range(0, len(data), 16):
+        prev = _encrypt_block(rk, bytes(a ^ b for a, b in zip(data[i:i + 16], prev)))
+        out += prev
+    return out
+
+
+def aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    rk = _expand_key(key)
+    out, prev = b"", iv
+    for i in range(0, len(data), 16):
+        blk = data[i:i + 16]
+        out += bytes(a ^ b for a, b in zip(_decrypt_block(rk, blk), prev))
+        prev = blk
+    pad = out[-1] if out else 0
+    return out[:-pad] if 1 <= pad <= 16 else out
+
+
+class MiioError(RuntimeError):
+    pass
+
+
+class MiioClient:
+    """最小 miIO 客户端：握手 + 加密请求（get_properties / set_properties）。"""
+
+    def __init__(self, ip: str, token_hex: str, timeout: float = 4.0, port: int = 54321):
+        self.ip, self.port, self.timeout = ip, int(port), float(timeout)
+        try:
+            self.token = bytes.fromhex((token_hex or "").strip())
+        except ValueError as e:
+            raise MiioError(f"token 不是合法 hex：{e}") from e
+        if len(self.token) != 16:
+            raise MiioError(f"token 必须是 32 个 hex 字符（16 字节），当前 {len(self.token)} 字节")
+        self._key = hashlib.md5(self.token).digest()
+        self._iv = hashlib.md5(self._key + self.token).digest()
+        self._device_id = b"\x00\x00\x00\x00"
+        self._stamp = 0
+        self._id = 0
+
+    def _udp(self, payload: bytes, expect: int = 1024) -> bytes:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(self.timeout)
+        try:
+            s.sendto(payload, (self.ip, self.port))
+            data, _ = s.recvfrom(expect)
+            return data
+        finally:
+            s.close()
+
+    def handshake(self) -> dict:
+        data = self._udp(HELLO, 32)
+        if len(data) < 32 or data[:2] != b"\x21\x31":
+            raise MiioError(f"握手响应异常：{data[:32].hex()}")
+        self._device_id = data[8:12]
+        self._stamp = struct.unpack(">I", data[12:16])[0]
+        return {"device_id": self._device_id.hex(), "stamp": self._stamp}
+
+    def _pack(self, payload: bytes) -> bytes:
+        header = (struct.pack(">HHI", 0x2131, 32 + len(payload), 0)
+                  + self._device_id + struct.pack(">I", (self._stamp + 1) & 0xFFFFFFFF))
+        return header + hashlib.md5(header + self.token + payload).digest() + payload
+
+    def request(self, method: str, params):
+        if not self._stamp:
+            self.handshake()
+        self._id += 1
+        body = json.dumps({"id": self._id, "method": method, "params": params}).encode()
+        for attempt in (1, 2):
+            data = self._udp(self._pack(aes_cbc_encrypt(self._key, self._iv, body)))
+            if len(data) >= 32:
+                try:
+                    reply = json.loads(aes_cbc_decrypt(self._key, self._iv, data[32:]))
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise MiioError(f"响应解密失败：{e}") from e
+            elif attempt == 2:
+                raise MiioError(f"响应太短：{data.hex()}")
+            # 时间戳过期是常见原因：重握手再来一次
+            self._stamp = 0
+            self.handshake()
+        if "error" in reply:
+            raise MiioError(f"设备返回错误：{reply['error']}")
+        return reply.get("result")
+
+    @staticmethod
+    def _did(siid: int, piid: int) -> str:
+        return f"{siid}-{piid}"
+
+    def get_properties(self, pairs) -> dict:
+        params = [{"did": self._did(s, p), "siid": s, "piid": p} for s, p in pairs]
+        out = {}
+        for item in (self.request("get_properties", params) or []):
+            if isinstance(item, dict) and item.get("code", 0) == 0:
+                out[(item["siid"], item["piid"])] = item.get("value")
+        return out
+
+    def set_property(self, siid: int, piid: int, value) -> bool:
+        res = self.request("set_properties",
+                           [{"did": self._did(siid, piid), "siid": siid, "piid": piid, "value": value}]) or []
+        for item in res:
+            if isinstance(item, dict):
+                return item.get("code", 1) == 0
+        return False
+
+
+class PlugMiio:
+    """小米智能插座执行端。接口与原来的 Esp32Link 对齐：set_port / read_status / probe。
+
+    ⚠️ 写成功 ≠ 真的切了：这里每次都**回读确认**（BLE 那条路的教训：不能只看「发出去了」）。
+    """
 
     def __init__(self, cfg: dict, dry_run: bool = False):
         self.c = cfg
         self.dry_run = dry_run
-        self._port_path: str | None = None
+        self._client: MiioClient | None = None
 
-    def _url(self, path: str) -> str:
-        return self.c["base_url"].rstrip("/") + path
+    def configured(self) -> bool:
+        return bool(self.c.get("ip") and self.c.get("token"))
 
-    def _get(self, path: str) -> tuple[int, str]:
-        req = urllib.request.Request(self._url(path), method="GET")
-        with urllib.request.urlopen(req, timeout=float(self.c["timeout_sec"])) as r:
-            return r.status, r.read().decode("utf-8", "replace")
+    def _cli(self) -> MiioClient:
+        if self._client is None:
+            self._client = MiioClient(self.c["ip"], self.c["token"],
+                                      timeout=float(self.c.get("timeout_sec", 4.0)),
+                                      port=int(self.c.get("udp_port", 54321)))
+        return self._client
+
+    def _pair(self, prefix: str) -> tuple[int, int]:
+        return int(self.c[f"{prefix}_siid"]), int(self.c[f"{prefix}_piid"])
+
+    def read_on(self):
+        s, p = self._pair("on")
+        return self._cli().get_properties([(s, p)]).get((s, p))
 
     def set_port(self, on: bool) -> bool:
-        state = self.c["on_value"] if on else self.c["off_value"]
-        port = self.c["port"]
         if self.dry_run:
-            print(f"[dry-run] 会请求 ESP32：{port} -> {state}", flush=True)
+            print(f"[dry-run] 会给插座发「{'通电' if on else '断电'}」（不实际执行）", flush=True)
             return True
-        paths = [self._port_path] if self._port_path else []
-        paths += [p for p in self.CANDIDATE_PORT_PATHS if p not in paths]
-        last = ""
-        for p in paths:
-            if not p:
-                continue
-            path = p.format(port=port, state=state)
-            try:
-                code, body = self._get(path)
-                if 200 <= code < 300:
-                    self._port_path = p
-                    print(f"[esp32] {path} -> {code}", flush=True)
-                    return True
-                last = f"{path} -> {code}"
-            except urllib.error.HTTPError as e:
-                last = f"{path} -> HTTP {e.code}"
-            except Exception as e:
-                last = f"{path} -> {type(e).__name__}: {e}"
-        print(f"[esp32] 端口控制失败：{last}", flush=True)
-        return False
+        if not self.configured():
+            print("[plug] ip/token 没配齐，拒绝控电（未知状态绝不动作）", flush=True)
+            return False
+        s, p = self._pair("on")
+        try:
+            if not self._cli().set_property(s, p, bool(on)):
+                print(f"[plug] 设备拒绝写 {s}-{p}={on}", flush=True)
+                return False
+            got = self.read_on()
+            if got is None:
+                print("[plug] 写入后回读失败：不确定有没有切成功", flush=True)
+                return False
+            if bool(got) != bool(on):
+                print(f"[plug] 回读不一致：想要 {on}，实际 {got}", flush=True)
+                return False
+            print(f"[plug] {self.c.get('label', '插座')} -> {'通电' if on else '断电'}（已回读确认）", flush=True)
+            return True
+        except Exception as e:
+            print(f"[plug] 控制失败：{type(e).__name__}: {e}", flush=True)
+            return False
 
-    def read_status(self):
-        for p in ([self.c["status_path"]] if self.c.get("status_path") else []) + self.CANDIDATE_STATUS_PATHS:
-            try:
-                code, body = self._get(p)
-                if 200 <= code < 300:
-                    try:
-                        return json.loads(body)
-                    except Exception:
-                        return {"raw": body[:400]}
-            except Exception:
-                continue
-        return None
+    def read_status(self) -> dict:
+        if not self.configured():
+            return {}
+        try:
+            pairs = [self._pair("on"), self._pair("power"), self._pair("fault")]
+            vals = self._cli().get_properties(pairs)
+        except Exception:
+            return {}
+        return {"on": vals.get(pairs[0]), "power_w": vals.get(pairs[1]), "fault": vals.get(pairs[2])}
 
     def probe(self) -> None:
-        print("== 探测 ESP32 REST 接口（只读，不改端口状态）==")
-        for p in ([self.c["status_path"]] if self.c.get("status_path") else []) + self.CANDIDATE_STATUS_PATHS:
+        print("== 探测插座（只读，不切换任何东西）==")
+        if not self.configured():
+            print("  ip/token 没配齐 —— token 请放进 charge_guard_phone.local.json（不进 git）")
+            return
+        c = self._cli()
+        print(f"  {self.c['ip']}:{int(self.c.get('udp_port', 54321))}  握手 -> {c.handshake()}")
+        for label, prefix in (("开关", "on"), ("功率 W", "power"), ("故障", "fault")):
             try:
-                code, body = self._get(p)
-                print(f"  GET {p:<22} -> {code}  {body[:120]!r}")
+                print(f"  {label:<8} {self._pair(prefix)} = {c.get_properties([self._pair(prefix)])}")
             except Exception as e:
-                print(f"  GET {p:<22} -> {type(e).__name__}: {e}")
+                print(f"  {label:<8} 读取失败：{type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------- 判定（同步自 charge_guard.py）
@@ -344,8 +564,9 @@ class Guard:
     def _actuate(self, action: str, reading: dict, reason: str) -> None:
         want_on = (action == "on")
         if not self.plug.set_port(want_on):
-            self.log.row("error", reading, action=action, reason=reason, note="ESP32 请求失败")
-            self.alerter.send("esp32-error", "ESP32 端口控制失败", f"想把 {self.cfg['esp32']['port']} 设为 {want_on}，失败。")
+            self.log.row("error", reading, action=action, reason=reason, note="插座请求失败")
+            self.alerter.send("plug-error", "插座控制失败",
+                              f"想把「{self.cfg['plug'].get('label', '插座')}」设为 {'通电' if want_on else '断电'}，失败。")
             return
         self.log.row("action", reading, action=action, reason=reason)
         self.plug_on = want_on
@@ -487,6 +708,49 @@ def self_test() -> int:
     g._actuate("off", _r(70), "test")
     check("失败时 plug_on 保持未知", g.plug_on, None)
 
+    print("\n== 插座执行端：写成功 ≠ 真的切了（必须回读确认）==")
+
+    class StubPlug(PlugMiio):
+        """不起真 socket：把「写入结果」和「回读结果」注入进来。"""
+        def __init__(self, write_ok=True, read_back=True):
+            super().__init__(dict(DEFAULTS["plug"], ip="1.2.3.4", token="00" * 16))
+            self.write_ok, self.read_back, self.writes = write_ok, read_back, []
+
+        def _cli(self):
+            outer = self
+
+            class C:
+                def set_property(self, s, p, v):
+                    outer.writes.append((s, p, v))
+                    return outer.write_ok
+
+                def get_properties(self, pairs):
+                    s, p = pairs[0]
+                    return {(s, p): outer.read_back}
+
+                def handshake(self):
+                    return {}
+
+            return C()
+
+    sp = StubPlug(read_back=False)
+    check("写+回读一致 -> True", sp.set_port(False), True)
+    check("写到了 on_siid/on_piid", sp.writes[-1][:2], (2, 1))
+    check("写的是 bool False", sp.writes[-1][2], False)
+    check("设备拒绝写 -> False", StubPlug(write_ok=False).set_port(False), False)
+    check("回读与目标不一致 -> False（防「假成功」）", StubPlug(read_back=True).set_port(False), False)
+
+    print("\n== miIO 协议自检：AES 已知向量（NIST FIPS-197 附录 B）==")
+    key = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+    pt = bytes.fromhex("00112233445566778899aabbccddeeff")
+    ct = _encrypt_block(_expand_key(key), pt)
+    check("AES-128 单块加密 = 69c4e0d86a7b0430d8cdb78070b4c55a", ct.hex(),
+          "69c4e0d86a7b0430d8cdb78070b4c55a")
+    check("解密回原文", _decrypt_block(_expand_key(key), ct), pt)
+    check("CBC 往返（含 padding）",
+          aes_cbc_decrypt(key, b"\x00" * 16, aes_cbc_encrypt(key, b"\x00" * 16, b"hello miio")),
+          b"hello miio")
+
     print(f"\n===== 自测结果：{passed} 通过 / {failed} 失败 =====")
     return 0 if failed == 0 else 1
 
@@ -498,8 +762,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只读电量与判定，不控端口")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--ticks", type=int, default=0)
-    ap.add_argument("--self-test", action="store_true", help="桩数据自测，不需要 Termux/ESP32")
-    ap.add_argument("--probe", action="store_true", help="探测 ESP32 的 REST 接口")
+    ap.add_argument("--self-test", action="store_true", help="桩数据自测，不需要 Termux 与插座")
+    ap.add_argument("--probe", action="store_true", help="探测插座（只读：握手 + 读开关/功率/故障）")
     ap.add_argument("--show-battery", action="store_true", help="只读一次电量并打印原始 JSON")
     args = ap.parse_args()
 
@@ -512,12 +776,12 @@ def main() -> int:
 
     cfg = load_config(args.config)
     if args.probe:
-        Esp32Link(cfg["esp32"]).probe()
+        PlugMiio(cfg["plug"]).probe()
         return 0
 
     log = CsvLog(cfg["log"]["csv"], int(cfg["log"]["keep_days"]))
     alerter = Alerter(cfg["alert"])
-    plug = Esp32Link(cfg["esp32"], dry_run=args.dry_run)
+    plug = PlugMiio(cfg["plug"], dry_run=args.dry_run)
 
     if cfg["loop"].get("wake_lock"):
         # 不让 Android Doze 把循环冻住；不需要就删掉这行
@@ -526,7 +790,7 @@ def main() -> int:
         except Exception:
             pass
 
-    print(f"phone_guard 启动：ESP32={cfg['esp32']['base_url']} port={cfg['esp32']['port']} "
+    print(f"phone_guard 启动：插座={cfg['plug']['ip']} 标签={cfg['plug'].get('label', '')} "
           f"stop_at={cfg['policy']['stop_at']} resume_at={cfg['policy']['resume_at']} "
           f"间隔={cfg['loop']['interval_sec']}s dry_run={args.dry_run}", flush=True)
     Guard(cfg, plug, log, alerter, dry_run=args.dry_run).run(ticks=args.ticks or (1 if args.once else 0))
