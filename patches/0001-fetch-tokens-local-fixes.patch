@@ -10,7 +10,7 @@ index bd94291..9b9a56c 100644
 +# local state: 固定客户端身份（UA/deviceId），非密钥但属于本机状态
 +xiaomi.client.json
 diff --git a/fetch_tokens.py b/fetch_tokens.py
-index 5c7e96c..af1910c 100644
+index 5c7e96c..17174de 100644
 --- a/fetch_tokens.py
 +++ b/fetch_tokens.py
 @@ -27,6 +27,7 @@ ACCOUNT = "https://account.xiaomi.com"
@@ -139,7 +139,7 @@ index 5c7e96c..af1910c 100644
          print(f"[-] login_step_2 returned: {js}")
          return False
  
-@@ -197,26 +268,69 @@ class MiCloud:
+@@ -197,26 +268,84 @@ class MiCloud:
          self.serviceToken = r.cookies.get("serviceToken")
          return r.status_code == 200 and self.serviceToken
  
@@ -147,29 +147,22 @@ index 5c7e96c..af1910c 100644
 +    def _2fa(self, notification_url):
          h = {"User-Agent": self.agent, "Content-Type": "application/x-www-form-urlencoded"}
          print("[!] two-factor authentication required")
-+        # 访问 authStart 会触发小米按「该会话的默认验证方式」自动发码
++        # 访问 authStart 建立本次验证会话
          self.s.get(notification_url, headers=h)
-         context = parse_qs(urlparse(notification_url).query)["context"][0]
-         list_params = {"sid": "xiaomiio", "context": context, "_locale": "en_US"}
+-        context = parse_qs(urlparse(notification_url).query)["context"][0]
+-        list_params = {"sid": "xiaomiio", "context": context, "_locale": "en_US"}
 -        self.s.get(f"{ACCOUNT}/identity/list", params=list_params, headers=h)
 -        send_params = {"_dc": str(int(time.time() * 1000)), "sid": "xiaomiio",
 -                       "context": context, "mask": "0", "_locale": "en_US"}
--        send_data = {"retry": "0", "icode": "", "_json": "true",
--                     "ick": self.s.cookies.get("ick", "")}
--        self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
--                    params=send_params, data=send_data, headers=h)
--        code = input("2FA code (check your email): ").strip()
--        verify_params = {"_flag": "8", "_json": "true", "sid": "xiaomiio",
--                         "context": context, "mask": "0", "_locale": "en_US"}
--        verify_data = {"_flag": "8", "ticket": code, "trust": "false", "_json": "true",
--                       "ick": self.s.cookies.get("ick", "")}
--        r = self.s.post(f"{ACCOUNT}/identity/auth/verifyEmail",
--                        params=verify_params, data=verify_data, headers=h)
++        ntf_q = parse_qs(urlparse(notification_url).query)
++        context = ntf_q["context"][0]
++        sid_param = (ntf_q.get("sid") or ["xiaomiio"])[0]
++        list_params = {"sid": sid_param, "supportedMask": "0", "context": context, "_locale": "zh_CN"}
 +        r_list = self.s.get(f"{ACCOUNT}/identity/list", params=list_params, headers=h)
-+        # [local patch] 渠道必须问服务端，不能写死：flag/options 里 4=短信(verifyPhone)、
-+        # 8=邮箱(verifyEmail)（与 merdok/homebridge-miot、al-one/hass-xiaomi-miot 一致）。
-+        # 原实现硬编码邮箱通道 —— 手机号注册的账号多数只给 options:[4]，
-+        # 此时 sendEmailTicket 照样返回「成功」并把码发到邮箱，但 verifyEmail 永远 code:2。
++        # [local patch] 渠道必须问服务端，不能写死：flag/options 里 4=短信(verifyPhone)、8=邮箱(verifyEmail)
++        # （依据：Yonsm/MiService 的 MiIO 抓包实现、merdok/homebridge-miot、al-one/hass-xiaomi-miot）。
++        # 原实现硬编码邮箱通道 —— 手机号注册的账号只给 4，此时 sendEmailTicket 照样返回「成功」并把码发进邮箱，
++        # 但服务端只认短信码 → verifyEmail 永远 code:2。**不是验证码抄错。**
 +        try:
 +            _list = json.loads(r_list.text.replace("&&&START&&&", ""))
 +        except Exception:
@@ -179,30 +172,52 @@ index 5c7e96c..af1910c 100644
 +        print(f"[debug] identity_session present: {bool(ident)}")
 +        flag = _list.get("flag", 4)
 +        options = _list.get("options") or [flag]
-+        if 8 in options:
-+            channel, verify_api, flag = "email", "verifyEmail", 8
-+        elif 4 in options:
-+            channel, verify_api, flag = "phone", "verifyPhone", 4
++        method = "Email" if flag == 8 else "Phone"
++        verify_api = f"verify{method}"
++        send_api = "sendEmailTicket" if method == "Email" else "sendPhoneTicket"
++        print(f"[i] 服务端要求用「{'邮箱' if method == 'Email' else '短信'}」完成身份验证"
++              f"（flag={flag}, options={options!r}）")
++        # [local patch] 「触发」与「下发」是两步，缺一不可 —— 依据 Yonsm/MiService 对 MiIO 的抓包：
++        #   ① GET  /identity/auth/verify{Phone|Email}?_flag=N&_json=true → 触发本次验证
++        #   ② POST /identity/auth/sendPhoneTicket（短信）/ sendEmailTicket（邮箱）→ 真正把码发出来
++        # 之前的版本只有邮箱分支里的 ②（且没有 ①，短信分支更是什么都没发）——
++        # 所以手机上永远收不到短信：**服务端根本没被要求发过它**。
++        r_trig = self.s.get(f"{ACCOUNT}/identity/auth/{verify_api}",
++                            params={"_flag": str(flag), "_json": "true"}, headers=h)
++        try:
++            _t_body = r_trig.json()
++        except Exception:
++            _t_body = r_trig.text[:300]
++        print(f"[debug] trigger {verify_api}?_flag={flag} -> HTTP {r_trig.status_code}  body={_t_body!r}")
++        send_params = {"_dc": str(int(time.time() * 1000)), "sid": sid_param,
++                       "context": context, "mask": "0", "_locale": "zh_CN"}
+         send_data = {"retry": "0", "icode": "", "_json": "true",
+                      "ick": self.s.cookies.get("ick", "")}
+-        self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
+-                    params=send_params, data=send_data, headers=h)
+-        code = input("2FA code (check your email): ").strip()
+-        verify_params = {"_flag": "8", "_json": "true", "sid": "xiaomiio",
+-                         "context": context, "mask": "0", "_locale": "en_US"}
+-        verify_data = {"_flag": "8", "ticket": code, "trust": "false", "_json": "true",
+-                       "ick": self.s.cookies.get("ick", "")}
+-        r = self.s.post(f"{ACCOUNT}/identity/auth/verifyEmail",
+-                        params=verify_params, data=verify_data, headers=h)
++        # [local patch] 原实现丢弃了这两个 POST 的响应，导致失败时无从判断原因
++        r_send = self.s.post(f"{ACCOUNT}/identity/auth/{send_api}",
++                             params=send_params, data=send_data, headers=h)
++        try:
++            _send_body = r_send.json()
++        except Exception:
++            _send_body = r_send.text[:300]
++        print(f"[debug] {send_api} -> HTTP {r_send.status_code}  body={_send_body!r}")
++        print(f"[debug] ick cookie present: {bool(self.s.cookies.get('ick', ''))}")
++        if isinstance(_send_body, dict) and _send_body.get("code") not in (0, None):
++            raise SystemExit(f"[-] 服务端拒绝发码（{send_api} code={_send_body.get('code')}）"
++                             "—— 上面那行响应就是原因，别再重复试。")
++        if method == "Email":
++            prompt = "2FA code (check your email, use the NEWEST one): "
 +        else:
-+            raise SystemExit(f"[-] 2FA 无可用验证方式（identity/list options={options!r}）")
-+        if channel == "email":
-+            send_params = {"_dc": str(int(time.time() * 1000)), "sid": "xiaomiio",
-+                           "context": context, "mask": "0", "_locale": "en_US"}
-+            send_data = {"retry": "0", "icode": "", "_json": "true",
-+                         "ick": self.s.cookies.get("ick", "")}
-+            # [local patch] 原实现丢弃了这两个 POST 的响应，导致失败时无从判断原因
-+            r_send = self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
-+                                 params=send_params, data=send_data, headers=h)
-+            try:
-+                _send_body = r_send.json()
-+            except Exception:
-+                _send_body = r_send.text[:300]
-+            print(f"[debug] sendEmailTicket -> HTTP {r_send.status_code}  body={_send_body!r}")
-+            print(f"[debug] ick cookie present: {bool(self.s.cookies.get('ick', ''))}")
-+            prompt = "2FA code (check your email): "
-+        else:
-+            # 短信通道：验证码由 authStart 触发自动下发，没有对应的主动 send 调用
-+            prompt = "SMS code （手机收到的短信验证码，不是邮箱里的）: "
++            prompt = "SMS code（手机收到的短信验证码，用它；别翻邮箱）: "
 +        code = wait_for_input(os.path.join(OUTDIR, "2fa_code.txt"), prompt)
 +        verify_params = {"_dc": str(int(time.time() * 1000))}
 +        verify_data = {"_flag": str(flag), "ticket": code, "trust": "false", "_json": "true"}
@@ -224,3 +239,65 @@ index 5c7e96c..af1910c 100644
          finish_loc = None
          try:
              finish_loc = r.json().get("location")
+@@ -249,22 +378,47 @@ class MiCloud:
+             except Exception:
+                 pass
+         if not self.ssecurity:
+-            print("[-] extension-pragma missing ssecurity")
+-            return False
+-        sts = r.headers.get("Location")
+-        if not sts and r.text:
+-            i = r.text.find("https://sts.api.io.mi.com/sts")
+-            if i != -1:
+-                j = r.text.find('"', i)
+-                sts = r.text[i:(j if j != -1 else i + 300)]
+-        if not sts:
+-            print("[-] no STS redirect after 2FA")
+-            return False
+-        r = self.s.get(sts, headers=h, allow_redirects=True)
+-        self.serviceToken = self.s.cookies.get("serviceToken", domain=".sts.api.io.mi.com") \
+-            or self.s.cookies.get("serviceToken")
++            print("[-] extension-pragma missing ssecurity（改走 resume 兜底）")
++        else:
++            sts = r.headers.get("Location")
++            if not sts and r.text:
++                i = r.text.find("https://sts.api.io.mi.com/sts")
++                if i != -1:
++                    j = r.text.find('"', i)
++                    sts = r.text[i:(j if j != -1 else i + 300)]
++            if sts:
++                self.s.get(sts, headers=h, allow_redirects=True)
++                self.serviceToken = self.s.cookies.get("serviceToken", domain=".sts.api.io.mi.com") \
++                    or self.s.cookies.get("serviceToken")
++            else:
++                print("[-] no STS redirect after 2FA（改走 resume 兜底）")
++        # [local patch] 兜底：验证已被服务端接受，但主流程没换到 serviceToken 时，
++        # 按 Yonsm/MiService 的抓包流程重走一次 serviceLogin —— 会话此时已认证，
++        # 它直接返回带 location 的结果，跟着走一遍就能拿到 serviceToken。
++        # 留这一步的理由：过一次验证的成本很高（还可能触发风控），不能在最后一步把成果丢掉。
++        if not self.serviceToken:
++            r2 = self.s.get(f"{ACCOUNT}/pass/serviceLogin",
++                            params={"sid": sid_param, "_json": "true"}, headers=h)
++            try:
++                js2 = json.loads(r2.text.replace("&&&START&&&", ""))
++            except Exception:
++                js2 = {}
++            print(f"[debug] resume serviceLogin -> code={js2.get('code')!r} "
++                  f"ssecurity={bool(js2.get('ssecurity'))} location={js2.get('location')!r}")
++            if js2.get("ssecurity"):
++                self.ssecurity = js2["ssecurity"]
++            self.userId = self.userId or js2.get("userId")
++            loc2 = js2.get("location")
++            if loc2 and not loc2.startswith("http"):
++                loc2 = ACCOUNT + loc2
++            if loc2:
++                self.s.get(loc2, headers=h, allow_redirects=True)
++                self.serviceToken = self.s.cookies.get("serviceToken", domain=".sts.api.io.mi.com") \
++                    or self.s.cookies.get("serviceToken")
+         self.userId = self.userId or self.s.cookies.get("userId", domain=".xiaomi.com") \
+             or self.s.cookies.get("userId", domain=".sts.api.io.mi.com")
++        if not self.serviceToken:
++            print("[-] 验证通过但没换到 serviceToken（resume 也没成功）")
+         return bool(self.serviceToken)
+ 
+     # ---- encrypted API ----

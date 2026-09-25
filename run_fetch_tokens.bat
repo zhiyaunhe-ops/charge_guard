@@ -17,6 +17,8 @@ echo  2) If a CAPTCHA appears, open http://127.0.0.1:31415 in a browser and
 echo     TYPE the code here (into this window), then press Enter.
 echo  3) If a verification code is asked (SMS for phone-registered accounts,
 echo     mail for email-registered ones), TYPE it here as well.
+echo     The script now SENDS the code itself -- look for the lines
+echo     "trigger verify..." and "send...Ticket" to see what the server said.
 echo     Only the NEWEST code counts -- older ones from earlier runs are dead.
 echo     Note: that is Xiaomi's risk check, NOT your account's 2FA switch --
 echo     it can trigger even when 2FA is off.
