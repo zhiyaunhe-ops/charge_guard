@@ -425,6 +425,62 @@ Luna 的手机（K70 Pro）**当场就能扫到充电器**（且此前从未配�
 
 ---
 
+## 九、路线定案（2026-09-25 深夜）：改走智能插座
+
+第八节把 PC 直连 BLE 这条路判为未走通。Luna 随后选定 **路线 2：智能插座断 220V**。
+本节记录这次切换做了什么、还缺什么、以及必须接受的代价。
+
+### 为什么是它
+
+| 对比项 | BLE 直控 C1（已放弃） | 智能插座（现在这条） |
+|---|---|---|
+| 卡点 | 设备拒绝完成 Mi BLE 握手（Windows/WinRT 侧，两个实现都试过） | 无 —— miOT 是**局域网 HTTP 协议**，python-miio 成熟且与平台无关 |
+| 需要额外硬件 | 不需要 | **需要**（¥30–60，必须选 Wi-Fi 版） |
+| 只切手机那一路 | ✅ | ❌ **整机断电**（C2/C3/A 上的设备一起断） |
+| 每次通断 | 无上电冲击 | 对 120W 电源一次上电冲击（inrush） |
+| 代码 | `ble_plug.py`（保留备用） | `charge_guard.py::PlugLink`（已完成大半） |
+
+### 已做（本次会话）
+
+- `python-miio 0.5.12` 装进**项目自己的 venv**（`C:\Users\zhiya\.workbuddy\binaries\python\envs\default`），
+  `miiocli` 可用。
+- `charge_guard.json` 的 `actuator` 改为 `miio`；`charger_ble` 段保留（备用）。
+- `--probe-plug` 的枚举范围从 `siid 1-10 × piid 1-10` **扩到 1-16 × 1-16** ——
+  米家智能插座3 的属性排到 siid 15，旧范围会漏掉功率（11）与指示灯（13）。
+- 文档/注释里写进了 **cuco.plug.v3 的预期编号**（开关 2/1、实时功率 11/2、累计电量 11/1），
+  仍然要求以真机 `--probe-plug` 为准。
+- 自测仍 **54/54**；`--actuator miio --dry-run --once` 可正常跑（会明确提示「插座未配置，本次只读数」）。
+
+### 还缺什么
+
+1. **插座本体**：必须是 **Wi-Fi 版（miOT 局域网可控）**。
+   ⚠️ 不要买「蓝牙 Mesh」版（那类要靠网关转发，等于又回到蓝牙那条路）。
+   参考：米家智能插座3（`cuco.plug.v3`）—— 10A/2500W，带电量统计与「充电保护」，足够 120W 充电器。
+2. **ip + token**：`miiocli cloud` 登录小米账号（可能又走一次风控验证）→ 抄下插座的 ip 与 token。
+   token 写进 `charge_guard.local.json`（不进 git），ip 写 `charge_guard.json`。
+3. **跑一次 `--probe-plug`**（只读）确认真机编号，再填 `on_siid/on_piid`（预期 2/1）
+   与 `power_siid/power_piid`（预期 11/2）。
+4. **读端要恢复**：写这份文档时手机 `192.168.0.120` **ping 不通**（ADB 缓存端口 41723 是 18:24 的），
+   需要手机在 Wi-Fi 上、且**无线调试**开着，guard 才读得到电量。
+
+### 这条路上还没验的（别当已验）
+
+- **断电后 `AC powered` 的回读**：原 README 里就标着⛔未验证——现在它变成主路径的核心动作，
+  必须实测：断电 → `dumpsys battery` 里 `AC powered: false`？（否则「断开了吗」无法确认）
+- **插座属性编号**：上表是 cuco.plug.v3 的官方 spec，真机 `--probe-plug` 为准（型号不同编号会变）。
+- 插座自带「充电保护」（按功率自动断）与「快捷倒计时关闭」（siid 8）都没试过，
+  可以作为**兜底保险丝**（例如「通电 90 分钟后无条件断电」），但需要单独验证。
+
+### 顺带保留的资产
+
+- `ble_plug.py` + `charger_ble` 配置 + `patches/0001`（含 ad1204_ble 的两处修复）**不删**：
+  换 Linux 或上 ESP32 桥时，第八节记录的五个坑和这些补丁仍然有效。
+- `patches/test_fetch_tokens_2fa_offline.py`（5/5）与 `ble_probe.py`（现已如实报告）
+  也都是下次接着干的工具。
+
+---
+
+
 ## 参考
 
 - `ohaiibuzzle/xiaomi-ad1204-python` — https://github.com/ohaiibuzzle/xiaomi-ad1204-python

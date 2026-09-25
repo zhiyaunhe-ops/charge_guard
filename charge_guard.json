@@ -1,8 +1,8 @@
 {
   "_comment": "charge_guard 配置。改完重启脚本生效。所有阈值都可追溯，见 charge-strategy-review.md。",
 
-  "actuator": "ble",
-  "_comment_actuator": "ble = 充电器端口直控（C1 口，不需要额外硬件）；miio = 小米智能插座。",
+  "actuator": "miio",
+  "_comment_actuator": "miio = 小米智能插座（断 220V，整机一起断；2026-09-25 决定启用）；ble = 充电器端口直控（PC 直连未走通，见 actuator-control-path.md 第八节，保留备用）。",
 
   "charger_ble": {
     "python_exe": "C:\\Users\\zhiya\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe",
@@ -66,8 +66,9 @@
     "power_siid": null,
     "power_piid": null,
     "readback_timeout_sec": 20,
-    "_comment": "⚠️ 必须填写 ip/token，以及真机实测出来的 siid/piid。不要照抄网上旧型号的编号。探索命令见 README「插座属性探测」。",
-    "_token_hygiene": "token 是密钥：优先用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（会覆盖这里的值），不要把真 token 写进 git。"
+    "_comment": "⚠️ 必须填写 ip/token，以及真机实测出来的 siid/piid（先跑 --probe-plug，它只读）。买插座必须选 **Wi-Fi 版（miOT 局域网可控）**，不要蓝牙 Mesh 版。",
+    "_known_cuco_plug_v3": "米家智能插座3（cuco.plug.v3，ZNCZ301KK）按官方 miot-spec 的预期值，探测后核对：开关=on_siid 2 / on_piid 1；实时功率=power_siid 11 / power_piid 2。",
+    "_token_hygiene": "token 是密钥：优先写进 charge_guard.local.json（不进 git），或用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（优先级最高）。"
   },
 
   "loop": {

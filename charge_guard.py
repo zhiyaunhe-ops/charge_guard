@@ -691,7 +691,16 @@ def probe_plug(cfg: dict) -> int:
     """
     只读枚举 MIoT 属性表，帮你在真机上定位 siid/piid。
     ⚠️ 不发送任何写指令（不会把插座切来切去），可以放心跑。
-    ZNCZ401KK 是较新型号，python-miio 可能没有专用类，所以不预设编号。
+
+    范围 1..16 × 1..16：**米家智能插座3（cuco.plug.v3）的属性一直排到 siid 15**
+    （最早那版只扫到 siid 10，会漏掉 11 功率/13 指示灯/15 功率限制参数）。
+    官方 miot-spec 里 cuco.plug.v3 的布局（供对照，仍以真机探测为准）：
+      siid 2  piid 1  开关（bool，读写）
+      siid 2  piid 3  故障（0 无 / 1 过温 / 2 过载）
+      siid 4  充电保护（piid 1 开关 / 2 功率阈值 / 3 时长）
+      siid 8  快捷倒计时关闭（piid 1 开关 / 2 时长 / 3 剩余）
+      siid 11 piid 1  累计电量（0.01 kWh） / piid 2 实时功率（W）
+      siid 13 指示灯 / siid 14 充电保护扩展 / siid 15 功率限制扩展
     """
     plug = cfg["plug"]
     if not (plug.get("ip") and plug.get("token")):
@@ -701,7 +710,7 @@ def probe_plug(cfg: dict) -> int:
         from miio import MiotDevice
     except ImportError:
         print("没装 python-miio：pip install -U python-miio\n"
-              "若认不出 ZNCZ401KK，装开发版：pip install git+https://github.com/rytilahti/python-miio.git")
+              "若认不出该型号，装开发版：pip install git+https://github.com/rytilahti/python-miio.git")
         return 2
 
     kw = {"ip": plug["ip"], "token": plug["token"]}
@@ -709,8 +718,8 @@ def probe_plug(cfg: dict) -> int:
         kw["model"] = plug["model"]
     dev = MiotDevice(**kw)
 
-    pairs = [(siid, piid) for siid in range(1, 11) for piid in range(1, 11)]
-    print(f"探测 {plug['ip']}：枚举 siid 1-10 × piid 1-10（只读）")
+    pairs = [(siid, piid) for siid in range(1, 17) for piid in range(1, 17)]
+    print(f"探测 {plug['ip']}：枚举 siid 1-16 × piid 1-16（只读，共 {len(pairs)} 项）")
     results = []
     try:
         props = [{"siid": s, "piid": p} for s, p in pairs]
@@ -733,6 +742,7 @@ def probe_plug(cfg: dict) -> int:
         print(f"{s:>4} {p:>4}  {v!r}")
     print("\n怎么认：布尔值 -> 大概率是开关（填进 plug.on_siid / on_piid）；"
           "带小数的数值 -> 功率/电量（填 power_siid / power_piid）。\n"
+          "米家智能插座3 的预期值：开关 = 2/1，实时功率 = 11/2，累计电量 = 11/1。\n"
           "确认后建议先用 --dry-run 跑一轮，再正式运行。")
     return 0
 
