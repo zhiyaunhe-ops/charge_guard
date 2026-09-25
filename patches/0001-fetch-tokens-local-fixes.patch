@@ -9,6 +9,38 @@ index bd94291..9b9a56c 100644
 +
 +# local state: 固定客户端身份（UA/deviceId），非密钥但属于本机状态
 +xiaomi.client.json
+diff --git a/ad1204_ble.py b/ad1204_ble.py
+index 3189cdb..55ae570 100644
+--- a/ad1204_ble.py
++++ b/ad1204_ble.py
+@@ -493,8 +493,14 @@ class Charger:
+             print(f"  siid {siid:>2} piid {piid:>2}  {label:<42} = {val}")
+ 
+     async def run(self, watch_s=0, sets=None):
+-        await self.connect()
++        # [local patch] 断开必须覆盖 connect() 自身失败的情形。
++        # 原实现是 `await self.connect()` 之后才 try/finally disconnect ——
++        # 一旦 connect() 内部中途抛异常（例如 Windows 上 CCCD 写入被取消），
++        # 那句 finally 根本不会执行，OS 把 ACL 链路留着 ⇒ 充电器停止广播
++        # ⇒ 之后每次连接都报 "Device with address ... was not found"。
++        # 2026-09-25 实测踩到：整条执行端看起来「连不上任何东西」，其实是自己挂死的。
+         try:
++            await self.connect()
+             await self.login()
+             if sets:
+                 for spec, val in sets:
+@@ -522,7 +528,10 @@ class Charger:
+             if watch_s:
+                 await self.watch(watch_s)
+         finally:
+-            await self.client.disconnect()
++            try:
++                await self.client.disconnect()
++            except Exception:
++                pass
+ 
+ 
+ def main():
 diff --git a/fetch_tokens.py b/fetch_tokens.py
 index 5c7e96c..17174de 100644
 --- a/fetch_tokens.py

@@ -93,10 +93,10 @@ class ChargerBle:
             raise ChargerBleError(f"token 必须是 12 字节（24 个 hex 字符），现在是 {len(self.token)} 字符")
 
     # ---- 调 vendored 实现
-    def _run(self, sets: list[str] | None = None, watch: int = 0) -> str:
+    def _run(self, sets: list[str] | None = None, watch: int = 0, use_address: bool = True) -> str:
         self._check()
         cmd = [self.python, "-X", "utf8", str(self.script), "--token", self.token, "--quiet"]
-        if self.address:
+        if use_address and self.address:
             cmd += ["--address", self.address]
         if watch:
             cmd += ["--watch", str(watch)]
@@ -113,6 +113,21 @@ class ChargerBle:
         if p.returncode != 0:
             raise ChargerBleError(f"脚本返回 {p.returncode}：{out.strip()[-400:]}")
         return out
+
+    def _run_resilient(self, sets: list[str] | None = None, watch: int = 0) -> str:
+        """先用配置里的 address 直连；连不上就退化成「让实现自己扫描找它」。
+
+        为什么需要：这台充电器**息屏会停播**，而且云端记录的地址未必一直有效
+        （实测同一地址先能连上、几分钟后变成 not found）。写死地址会让执行端很脆；
+        vendored 实现本身支持不带 --address 时按 Mi 服务 UUID(FE95) 扫描再连。
+        """
+        try:
+            return self._run(sets=sets, watch=watch, use_address=True)
+        except ChargerBleError as e:
+            if not (self.address and "not found" in str(e).lower()):
+                raise
+            self.log(f"[charger] 用配置地址 {self.address} 连不上，改为扫描查找 …")
+            return self._run(sets=sets, watch=watch, use_address=False)
 
     @staticmethod
     def parse_props(text: str) -> dict[tuple[int, int], object]:

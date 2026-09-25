@@ -6,7 +6,9 @@
 
 ## 0001 — fetch-tokens-local-fixes
 
-- 目标：`third_party/xiaomi-ad1204-python/fetch_tokens.py`
+- 目标：
+  - `third_party/xiaomi-ad1204-python/fetch_tokens.py`（取 token：输入方式、诊断、2FA、客户端身份）
+  - `third_party/xiaomi-ad1204-python/ad1204_ble.py`（执行端：把 `disconnect()` 挪进覆盖 `connect()` 的 finally）
 - 上游版本：`ohaiibuzzle/xiaomi-ad1204-python` @ `9227df07b79af7d2ddb6730ffdabedc53bdae77f`（2026-09-15）
 - 应用方式：
   ```bash
@@ -93,4 +95,22 @@
   但一旦成功过一次，凭据会缓存进 `xiaomi.token`，之后重跑直接复用、不再登录（`load_token`），
   所以这套流程只需要闯过一次。
 
-⚠️ 上游更新后应用本补丁可能冲突 —— 冲突就以「按上面三条重新加改动」为准，别硬套。
+⚠️ 上游更新后应用本补丁可能冲突 —— 冲突就以「按上面五条重新加改动」为准，别硬套。
+
+### 5. `ad1204_ble.py`：断开要覆盖 `connect()` 自身失败（2026-09-25 实机踩到）
+
+- **现象**：`--probe-charger` 第一次连上了（走到 GATT 的 CCCD 写入），报
+  `OSError [WinError -2147023673] 操作已被用户取消`；之后**同一个地址一律**
+  `Device with address 3C:CD:73:37:B7:EE was not found`，看起来像「设备消失了」。
+- **根因**：`run()` 是 `await self.connect()` 之后才 `try/finally: disconnect()`。
+  `connect()` **内部**抛异常时那句 finally 根本不执行 ⇒ 连接没断 ⇒
+  OS 留着 ACL 链路 ⇒ 充电器（一次只接受一条连接）不再广播 ⇒
+  bleak 3 的 `connect()` 是「先扫描找到它再连」，扫不到就直接
+  `BleakDeviceNotFoundError`。**设备没坏，是我们自己把它挂死了。**
+- **改动**：把 `try` 提到 `connect()` 之前，`finally` 里的 `disconnect()` 加异常保护。
+- **排查时顺带确认的事实**（2026-09-25，详见 `actuator-control-path.md` 第七节）：
+  - 云端地址与 Windows 配对地址**一致**（`BTHLE\DEV_3CCD7337B7EE`）；
+  - 用 WinRT 直接问系统：`from_bluetooth_address_async` 解析成功、`connection_status=0`
+    ⇒ 系统认得它、但没有活动连接 ⇒ 「找不到」纯粹因为当时它没在广播；
+  - BLE 扫描一度完全收不到任何广播，**把蓝牙无线电关掉再打开**即恢复
+    （同一台机器、同一驱动）——那是一次可复位的卡死，不必先动驱动。

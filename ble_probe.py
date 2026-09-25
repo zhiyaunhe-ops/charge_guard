@@ -110,17 +110,25 @@ async def step3_scan() -> int:
             pass
 
         def on_recv(sender, args):
+            # ⚠️ 先记录地址，再去取名字/信号 —— 绝不能把「记录」和「取次要字段」放进同一个 try。
+            # 本机 winrt 绑定里 args 没有 `rssi`（正确名字是 raw_signal_strength_in_dbm，
+            # 有的版本两者都没有）。之前 `seen[...] = (nm, args.rssi)` 一抛异常，
+            # 整条记录就被丢掉，于是**明明收到了广播也报 0 个** —— 2026-09-25 踩过。
+            rssi = getattr(args, "rssi", None)
+            if rssi is None:
+                rssi = getattr(args, "raw_signal_strength_in_dbm", None)
+            name = None
             try:
                 adv = args.advertisement
-                nm = adv.local_name
-                if not nm and adv.data_sections:
+                name = adv.local_name
+                if not name and adv.data_sections:
                     for s in adv.data_sections:
                         if s.data_type == 0x09:
-                            nm = bytes(s.data).decode("utf-8", "replace")
+                            name = bytes(s.data).decode("utf-8", "replace")
                             break
-                seen[args.bluetooth_address] = (nm, args.rssi)
             except Exception:
                 pass
+            seen[args.bluetooth_address] = (name, rssi)
 
         aborted = []
         aborted_supported = False
