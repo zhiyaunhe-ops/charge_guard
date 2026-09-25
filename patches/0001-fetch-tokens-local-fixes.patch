@@ -1,0 +1,143 @@
+diff --git a/fetch_tokens.py b/fetch_tokens.py
+index 5c7e96c..38597b6 100644
+--- a/fetch_tokens.py
++++ b/fetch_tokens.py
+@@ -64,6 +64,34 @@ def rc4_dec(key_b64: str, payload: str) -> bytes:
+ 
+ 
+ # ----------------------------------------------------------------- captcha server
++def wait_for_input_file(path, prompt, timeout=600):
++    """[local patch] 从文件等待一个输入值，代替 input()。
++
++    为什么需要：这个流程有两处交互输入（图形验证码、邮件 2FA 码），而
++    非交互式的驱动方（自动化/agent）给不出 stdin。改成轮询文件之后，
++    驱动方可以「看到拦在等什么 → 把值写进文件 → 流程继续」。
++    """
++    print(prompt, flush=True)
++    print(f"[wait] 等待值写入 {path}（最长 {timeout}s）", flush=True)
++    end = time.time() + timeout
++    while time.time() < end:
++        if os.path.exists(path):
++            try:
++                with open(path, encoding="utf-8") as f:
++                    val = f.read().strip()
++            except OSError:
++                val = ""
++            if val:
++                try:
++                    os.unlink(path)
++                except OSError:
++                    pass
++                print("[wait] 取到值，继续", flush=True)
++                return val
++        time.sleep(1)
++    raise SystemExit(f"[-] 等待输入超时（{timeout}s）：{path}")
++
++
+ def serve_captcha(image: bytes, stop: threading.Event):
+     class H(BaseHTTPRequestHandler):
+         def do_GET(self):
+@@ -84,7 +112,8 @@ def serve_captcha(image: bytes, stop: threading.Event):
+         f.write(image)
+     print(f"[!] CAPTCHA required. Open http://127.0.0.1:{CAPTCHA_PORT} in a browser "
+           f"(image also saved to {path}), solve it, then enter the code.")
+-    code = input("captcha code (case-sensitive): ").strip()
++    code = wait_for_input_file(os.path.join(OUTDIR, "captcha_code.txt"),
++                               "captcha code (case-sensitive): ")
+     stop.set()
+     srv.shutdown()
+     return code
+@@ -188,7 +217,7 @@ class MiCloud:
+             self.pass_token, self.location = js.get("passToken"), js.get("location")
+             return True
+         if js.get("notificationUrl"):
+-            return self._2fa_email(js["notificationUrl"])
++            return self._2fa(js["notificationUrl"])
+         print(f"[-] login_step_2 returned: {js}")
+         return False
+ 
+@@ -197,26 +226,69 @@ class MiCloud:
+         self.serviceToken = r.cookies.get("serviceToken")
+         return r.status_code == 200 and self.serviceToken
+ 
+-    def _2fa_email(self, notification_url):
++    def _2fa(self, notification_url):
+         h = {"User-Agent": self.agent, "Content-Type": "application/x-www-form-urlencoded"}
+         print("[!] two-factor authentication required")
++        # 访问 authStart 会触发小米按「该会话的默认验证方式」自动发码
+         self.s.get(notification_url, headers=h)
+         context = parse_qs(urlparse(notification_url).query)["context"][0]
+         list_params = {"sid": "xiaomiio", "context": context, "_locale": "en_US"}
+-        self.s.get(f"{ACCOUNT}/identity/list", params=list_params, headers=h)
+-        send_params = {"_dc": str(int(time.time() * 1000)), "sid": "xiaomiio",
+-                       "context": context, "mask": "0", "_locale": "en_US"}
+-        send_data = {"retry": "0", "icode": "", "_json": "true",
+-                     "ick": self.s.cookies.get("ick", "")}
+-        self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
+-                    params=send_params, data=send_data, headers=h)
+-        code = input("2FA code (check your email): ").strip()
+-        verify_params = {"_flag": "8", "_json": "true", "sid": "xiaomiio",
+-                         "context": context, "mask": "0", "_locale": "en_US"}
+-        verify_data = {"_flag": "8", "ticket": code, "trust": "false", "_json": "true",
+-                       "ick": self.s.cookies.get("ick", "")}
+-        r = self.s.post(f"{ACCOUNT}/identity/auth/verifyEmail",
+-                        params=verify_params, data=verify_data, headers=h)
++        r_list = self.s.get(f"{ACCOUNT}/identity/list", params=list_params, headers=h)
++        # [local patch] 渠道必须问服务端，不能写死：flag/options 里 4=短信(verifyPhone)、
++        # 8=邮箱(verifyEmail)（与 merdok/homebridge-miot、al-one/hass-xiaomi-miot 一致）。
++        # 原实现硬编码邮箱通道 —— 手机号注册的账号多数只给 options:[4]，
++        # 此时 sendEmailTicket 照样返回「成功」并把码发到邮箱，但 verifyEmail 永远 code:2。
++        try:
++            _list = json.loads(r_list.text.replace("&&&START&&&", ""))
++        except Exception:
++            _list = {}
++        print(f"[debug] identity/list -> {_list!r}")
++        ident = self.s.cookies.get("identity_session", "")
++        print(f"[debug] identity_session present: {bool(ident)}")
++        flag = _list.get("flag", 4)
++        options = _list.get("options") or [flag]
++        if 8 in options:
++            channel, verify_api, flag = "email", "verifyEmail", 8
++        elif 4 in options:
++            channel, verify_api, flag = "phone", "verifyPhone", 4
++        else:
++            raise SystemExit(f"[-] 2FA 无可用验证方式（identity/list options={options!r}）")
++        if channel == "email":
++            send_params = {"_dc": str(int(time.time() * 1000)), "sid": "xiaomiio",
++                           "context": context, "mask": "0", "_locale": "en_US"}
++            send_data = {"retry": "0", "icode": "", "_json": "true",
++                         "ick": self.s.cookies.get("ick", "")}
++            # [local patch] 原实现丢弃了这两个 POST 的响应，导致失败时无从判断原因
++            r_send = self.s.post(f"{ACCOUNT}/identity/auth/sendEmailTicket",
++                                 params=send_params, data=send_data, headers=h)
++            try:
++                _send_body = r_send.json()
++            except Exception:
++                _send_body = r_send.text[:300]
++            print(f"[debug] sendEmailTicket -> HTTP {r_send.status_code}  body={_send_body!r}")
++            print(f"[debug] ick cookie present: {bool(self.s.cookies.get('ick', ''))}")
++            prompt = "2FA code (check your email): "
++        else:
++            # 短信通道：验证码由 authStart 触发自动下发，没有对应的主动 send 调用
++            prompt = "SMS code （手机收到的短信验证码，不是邮箱里的）: "
++        code = wait_for_input_file(os.path.join(OUTDIR, "2fa_code.txt"), prompt)
++        verify_params = {"_dc": str(int(time.time() * 1000))}
++        verify_data = {"_flag": str(flag), "ticket": code, "trust": "false", "_json": "true"}
++        r = self.s.post(f"{ACCOUNT}/identity/auth/{verify_api}",
++                        params=verify_params, data=verify_data, headers=h,
++                        cookies={"identity_session": ident} if ident else None)
++        # [local patch] 把服务端的原话打出来 —— 它才是「哪个环节不对」的唯一权威来源
++        try:
++            _v_body = r.json()
++        except Exception:
++            _v_body = r.text[:400]
++        print(f"[debug] {verify_api} -> HTTP {r.status_code}  body={_v_body!r}")
++        print(f"[debug] {verify_api} location={r.headers.get('Location')!r}")
++        if isinstance(_v_body, dict) and _v_body.get("code") not in (0, None):
++            raise SystemExit(
++                f"[-] 2FA 被服务端拒绝（{verify_api} code={_v_body.get('code')}）。"
++                "要么码错了/过期了，要么用了上一轮或另一渠道的旧码 —— 重跑脚本，用本次最新收到的那条。"
++            )
+         finish_loc = None
+         try:
+             finish_loc = r.json().get("location")
