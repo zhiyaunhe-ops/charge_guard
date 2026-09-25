@@ -142,6 +142,28 @@ chmod +x ~/.termux/boot/charge_guard.sh
 
 ---
 
+## 四之二、自愈看门狗（2026-09-25 实装，**这一层比保活设置更可靠**）
+
+实测：**从最近任务划掉 Termux，澎湃 OS 会杀掉整个应用进程，里面的 python 一起死**
+（日志证据：CSV 停在 22:31:06，之后 python 进程数从 1 变 0）。`nohup` + 唤醒锁挡不住这个。
+
+所以加了 Android 原生的一层自愈：
+
+```bash
+# 已装好（脚本在 ~/charge_guard/ensure_running.sh）
+termux-job-scheduler --script ~/charge_guard/ensure_running.sh   --job-id 1 --period-ms 900000 --persisted true
+# 查看已登记任务
+termux-job-scheduler --pending
+```
+
+- **每 15 分钟**（Android N 起的最小周期）由系统唤醒 Termux 跑一次 `ensure_running.sh`；
+  发现守护不在就拉起来，日志写 `/sdcard/charge_guard/watchdog.log`。
+- `--persisted true` ⇒ **重启后任务仍在**（配合 Termux:Boot 双保险）。
+- 代价：被杀后最多 15 分钟无人管理。**这段时间里的安全性由「插座保持最后状态」兜住**
+  （死在断电之后就不会再充；死在通电之后最多把电充到 100%，不会更糟）。
+
+---
+
 ## 五、澎湃 OS 保活（不做这步会被杀）
 
 这台是 HyperOS，后台管控很激进。逐项设置：
@@ -152,6 +174,12 @@ chmod +x ~/.termux/boot/charge_guard.sh
 4. **设置 → 电池 → 应用智能省电**里把 Termux 移出省电名单
 5. 顺手：**开发者选项 → 充电时保持唤醒**。理由不是防锁屏，而是**防 Wi-Fi 省电**：
    手机息屏久了 Wi-Fi 会进省电，而控插座走的是局域网 UDP，同样会受影响。
+6. 在「最近任务」里把 Termux 卡片**下拉锁定**（MIUI 最狠的保活手段）。
+
+用 ADB 能代劳的部分（本机已设）：`RUN_ANY_IN_BACKGROUND`/`RUN_IN_BACKGROUND = allow`、
+Doze 白名单 `+com.termux`、以及 MIUI 专属 op `10021/10020/10016 = allow`（10021 即 MIUI 自启动）。
+**但 MIUI 自家存储里的「省电策略/自启动」ADB 改不了**（`appops ... AUTO_START` 会报
+`Unknown operation string`），那两项仍需手点。
 
 ---
 
