@@ -1,0 +1,83 @@
+{
+  "_comment": "charge_guard 配置。改完重启脚本生效。所有阈值都可追溯，见 charge-strategy-review.md。",
+
+  "adb_path": "D:\\MuMuPlayer-12.0\\nx_main\\adb.exe",
+
+  "phone": {
+    "ip": "192.168.0.120",
+    "port_cache_file": "adb_port_cache.json",
+    "_comment_ip": "本机实测（2026-09-25）：K70 Pro 局域网地址 192.168.0.120；Tailscale 里它显示 offline，走局域网即可。"
+  },
+
+  "scan": {
+    "low": 30000,
+    "high": 50000,
+    "timeout_sec": 0.35,
+    "workers": 600,
+    "_comment": "2026-09-25 实测：20001 个端口、600 线程、0.35s 超时 = 12.3s 扫完；扫出 40023 与 41723，其中 41723 才是连接端口。"
+  },
+
+  "connect": {
+    "attempts_per_port": 3,
+    "restart_server_before_attempt": "auto",
+    "probe_cmd": "echo ok",
+    "probe_expect": "ok",
+    "_comment": "restart_server_before_attempt: always/auto/never。auto = 仅在上一次失败之后清 daemon —— 每次无脑 kill-server 会连带断掉其他 adb 连接（如 MuMu）。",
+    "_comment2": "⚠️ 刚 connect 上时 shell 未就绪，`adb shell ...` 会返回空字符串且不报错 —— 所以在线判定必须用功能探针，不能只看 adb devices。"
+  },
+
+  "policy": {
+    "stop_at": 65,
+    "resume_at": 50,
+    "stable_readings": 2,
+    "temp_cutoff_c": 45.0,
+    "temp_resume_c": 40.0,
+    "full_charge_flag_file": "full_charge.once",
+    "full_charge_target": 100,
+    "full_charge_done_at": 98,
+    "_comment": "stop_at/resume_at 按「常驻插电设备」定（BU-808 Table 4：4.06V≈80% 只有 600-1000 循环，3.92V≈65% 有 1200-2000）。不是随身机的 80/35。"
+  },
+
+  "plug": {
+    "enabled": true,
+    "ip": "",
+    "token": "",
+    "model": "",
+    "on_siid": null,
+    "on_piid": null,
+    "power_siid": null,
+    "power_piid": null,
+    "readback_timeout_sec": 20,
+    "_comment": "⚠️ 必须填写 ip/token，以及真机实测出来的 siid/piid。不要照抄网上旧型号的编号。探索命令见 README「插座属性探测」。",
+    "_token_hygiene": "token 是密钥：优先用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（会覆盖这里的值），不要把真 token 写进 git。"
+  },
+
+  "loop": {
+    "interval_sec": 300,
+    "readback_poll_sec": 2
+  },
+
+  "lost_contact": {
+    "short_break_sec": 600,
+    "stale_sec": 1800,
+    "stale_action_max_hours": 12,
+    "_comment": "短断保持原状；失联 > stale_sec 且最后一次读数 >= stop_at → 断电 + 告警；读数未知 → 保持通电 + 告警。"
+  },
+
+  "log": {
+    "csv": "charge_guard_log.csv",
+    "keep_days": 30
+  },
+
+  "alert": {
+    "type": "console",
+    "webhook_url": "",
+    "smtp": {
+      "host": "",
+      "port": 465,
+      "user": "",
+      "password": "",
+      "to": ""
+    }
+  }
+}

@@ -1,0 +1,92 @@
+
+== 解析：dumpsys battery 真实输出（2026-09-25 真机抓取，已改数值） ==
+  [PASS] level                                          got=67 want=67
+  [PASS] temperature 337 -> 33.7C（0.1℃ 单位）              got=33.7 want=33.7
+  [PASS] status=3 放电                                    got=3 want=3
+  [PASS] AC powered=false（这是断电回读的判据）                    got=False want=False
+  [PASS] voltage                                        got=3964 want=3964
+  [PASS] Charge counter                                 got=2483000 want=2483000
+
+== 解析：空串 / 缺 level 必须判未知，不得当 0 或当满 ==
+  [PASS] 空串 raw_ok                                      got=False want=False
+  [PASS] 空串 level                                       got=None want=None
+  [PASS] 无 level 字段 level                               got=None want=None
+  [PASS] level 越界(101) 判未知                              got=None want=None
+  [PASS] level 前后有杂字符不匹配                                got=None want=None
+
+== 决策：65/50 滞回 + 稳定计数 ==
+  [PASS] 60% 落在区间内 -> hold                              got='hold' want='hold'
+  [PASS] 66% 第 1 次 -> 待稳定                               got='pending' want='pending'
+  [PASS] 66% 第 2 次 -> 断电                                got='off' want='off'
+  [PASS] 插座收到的是断电                                       got=[False] want=[False]
+
+== 决策：回到下沿才通电 ==
+  [PASS] 52% 仍在下沿之上 -> hold                             got='hold' want='hold'
+  [PASS] 49% 第 1 次 -> 待稳定                               got='pending' want='pending'
+  [PASS] 49% 第 2 次 -> 通电                                got='on' want='on'
+  [PASS] 插座收到的是通电                                       got=[True] want=[True]
+
+== 决策：整数抖动不会卡死（stop_at+3 立即断电） ==
+  [PASS] 65% 第 1 次 -> 待稳定（未越界）                          got='pending' want='pending'
+  [PASS] 68% >= 65+3 -> 立即断电                            got='off' want='off'
+  [PASS] 48% 未越界 -> 待稳定                                 got='pending' want='pending'
+  [PASS] 46% <= 50-3 -> 立即通电（不等稳定）                      got='on' want='on'
+
+== 决策：温度安全项立即生效，不做稳定过滤 ==
+  [PASS] 45.0℃ 首次即断电                                    got='off' want='off'
+  [PASS] 温度锁存已置位                                        got=True want=True
+  [PASS] 42℃ 在 40-45 之间 -> 保持断电                         got=('off', 'temp-hold 42.0C > 40.0C') want=('off', 'temp-hold 42.0C > 40.0C')
+  [PASS] 39℃ 解除锁存                                       got=False want=False
+
+== 决策：读数未知绝不动作 ==
+  [PASS] level=None -> hold                             got=('hold', 'unknown-reading(level missing)') want=('hold', 'unknown-reading(level missing)')
+  [PASS] 失联第 1 轮                                        got='lost' want='lost'
+  [PASS] 失联第 2 轮                                        got='lost' want='lost'
+  [PASS] 失联期间没碰过插座                                      got=[] want=[]
+
+== 回归：电量单调变化时稳定门不得卡死（真机 dry-run 暴露） ==
+  [PASS] 67% -> 待连续同判定                                  got='pending' want='pending'
+  [PASS] 66%（与上次不同値）仍应断电                                got='off' want='off'
+  [PASS] 插座收到断电                                         got=[False] want=[False]
+  [PASS] 52% 区间内 -> hold                                got='hold' want='hold'
+  [PASS] 50% 触下沿 -> 待连续同判定                              got='pending' want='pending'
+  [PASS] 49%（仍在下降）第 2 次同判定 -> 通电                        got='on' want='on'
+  [PASS] 插座收到通电                                         got=[True] want=[True]
+
+== 6. 执行器回读：AC powered 是「断电到底生效没」的判据 ==
+  [PASS] 越界立即断电                                         got='off' want='off'
+  [PASS] 回读到 AC powered=false → 确认生效                    got=False want=False
+[charge_guard] 插座动作未被确认
+发出「断电」后 2s 内没读到 AC powered=False。
+原因可能是手机正被别处供电、miio 指令未生效、或读端失联。
+  [PASS] 回读一直不匹配仍下达断电                                   got='off' want='off'
+  [PASS] 不冒认成功（plug_on 保持未知）                            got=None want=None
+
+== 故障：插座指令失败 → 记 error，不改内部状态 ==
+  [PASS] 插座失败时返回 off（判定已下达）                             got='off' want='off'
+  [PASS] 失败不被当作成功（plug_on 仍未知）                          got=None want=None
+
+== 故障：失联分级（注入时钟） ==
+  [PASS] 失联 2min -> 保持原状                                got='lost' want='lost'
+  [PASS] 短断不动作                                          got=[] want=[]
+[charge_guard] 充电守护失联（已知充够）
+已失联 34 分钟，最后读数 67% >= stop_at 65%。
+处置：断电，避免电池长时间停在满电。请检查手机 Wi-Fi 与无线调试开关。
+  [PASS] 失联 >30min 且最后读数 67>=65 -> 断电                   got='lost' want='lost'
+  [PASS] 已发断电指令                                         got=[False] want=[False]
+[charge_guard] 充电守护失联
+已失联 32 分钟，最后读数 48%。
+处置：保持通电。请检查手机 Wi-Fi 与无线调试开关。
+  [PASS] 失联 >30min 且读数 48<65 -> 保持通电                    got=[] want=[]
+[charge_guard] 充电守护失联超时，已按兜底断电
+失联 13.5 小时（上限 12.0h），最后读数 48%。
+为避免电池长时间停在满电，已执行断电。
+  [PASS] 失联超 12h 上限 -> 兜底断电                             got=[False] want=[False]
+
+== 一次性满充标志 ==
+  [PASS] 标志存在 -> 目标提升到 100                              got=True want=True
+  [PASS] 66% 在 100 目标下不应断电                              got='hold' want='hold'
+  [PASS] 达到 98% 后标志自动清除                                 got=False want=False
+  [PASS] 标志文件已删除                                        got=False want=False
+
+===== 自测结果：54 通过 / 0 失败 =====

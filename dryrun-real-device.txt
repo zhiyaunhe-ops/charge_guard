@@ -1,0 +1,30 @@
+# 真机 dry-run 记录（2026-09-25，K70 Pro @192.168.0.120）
+# 命令：python -X utf8 charge_guard.py --config charge_guard.dryrun-test.json --dry-run --ticks 3
+# interval 临时设为 3s 以便多跑几轮；正式配置是 300s
+
+⚠️ 插座未配置（plug.ip / token / siid / piid 有空）——本次将只读数、不控电。
+   属性探测方法见 README「插座属性探测」。
+charge_guard 启动：ip=192.168.0.120 stop_at=65 resume_at=50 间隔=3s dry_run=True
+[dry-run] 会给插座发 断电（不实际执行）
+
+=== adb_port_cache.json ===
+{"ip": "192.168.0.120", "port": 41723, "ts": "2026-09-25T17:35:13"}
+=== dryrun-log.csv ===
+ts,event,level,temp_c,status,ac_powered,voltage_mv,charge_counter_uah,plug_power_w,action,reason,port,note
+2026-09-25T17:32:47,sample,67,31.0,3,False,3923,2473000,,,level 67 >= stop_at 65,41723,
+2026-09-25T17:32:47,pending,67,31.0,3,False,3923,2473000,,off,level 67 >= stop_at 65,,等待稳定读数（1/2）
+2026-09-25T17:32:50,sample,67,31.0,3,False,3923,2473000,,,level 67 >= stop_at 65,41723,
+2026-09-25T17:32:50,action,67,31.0,3,False,3923,2473000,,off,level 67 >= stop_at 65,,
+2026-09-25T17:32:53,sample,66,31.2,3,False,3939,2473000,,,level 66 >= stop_at 65,41723,
+2026-09-25T17:32:53,pending,66,31.2,3,False,3939,2473000,,off,level 66 >= stop_at 65,,等待稳定读数（1/2）
+2026-09-25T17:32:56,sample,66,31.2,3,False,3939,2473000,,,level 66 >= stop_at 65,41723,
+2026-09-25T17:34:42,sample,66,32.0,3,False,3942,2462000,,,level 66 >= stop_at 65,41723,
+2026-09-25T17:34:42,pending,66,32.0,3,False,3942,2462000,,off,level 66 >= stop_at 65,,等待连续同判定（1/2）
+2026-09-25T17:34:45,sample,66,32.0,3,False,3942,2462000,,,level 66 >= stop_at 65,41723,
+2026-09-25T17:34:45,action,66,32.0,3,False,3942,2462000,,off,level 66 >= stop_at 65,,
+2026-09-25T17:34:48,sample,66,32.3,2,True,3952,2453000,,,level 66 >= stop_at 65,41723,
+2026-09-25T17:35:14,sample,67,32.7,2,True,4327,2505000,,,level 67 >= stop_at 65,41723,
+2026-09-25T17:35:14,pending,67,32.7,2,True,4327,2505000,,off,level 67 >= stop_at 65,,等待连续同判定（1/2）
+2026-09-25T17:35:17,sample,68,32.8,2,True,4340,2518000,,,level 68 >= stop_at 65,41723,
+2026-09-25T17:35:17,action,68,32.8,2,True,4340,2518000,,off,level 68 >= stop_at 65,,
+2026-09-25T17:35:20,sample,68,33.0,2,True,4351,2529000,,,level 68 >= stop_at 65,41723,

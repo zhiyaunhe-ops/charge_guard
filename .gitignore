@@ -1,0 +1,13 @@
+# 本机数据 / 运行期状态，不进版本库
+.workbuddy/
+__pycache__/
+*.pyc
+
+# 脚本运行期自动生成的状态与日志
+adb_port_cache.json
+charge_guard_log.csv
+full_charge.once
+
+# 密钥：插座 token 用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入
+charge_guard.local.json
+.env
