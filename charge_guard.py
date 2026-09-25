@@ -553,6 +553,38 @@ class AdbLink:
 
 
 # ---------------------------------------------------------------- 6. 插座
+def _miot_first(resp):
+    """从 MIoT 响应里取出第一个字典项。
+
+    python-miio 的 `MiotDevice.get_property_by / set_property_by` 在不同版本里
+    返回「列表套字典」（0.5.12 就是这样）或「裸标量」，这里统一成字典或 None。
+    2026-09-25 踩到：原实现直接 `float(resp)`，遇到列表会抛异常，然后被
+    `except Exception: return None` 吞掉 —— 功率永远是 None，看起来像「插座不支持读功率」。
+    """
+    if isinstance(resp, list):
+        for item in resp:
+            if isinstance(item, dict):
+                return item
+        return None
+    if isinstance(resp, dict):
+        return resp
+    return None
+
+
+def _miot_value(resp):
+    item = _miot_first(resp)
+    if item is None:
+        return resp if not isinstance(resp, list) else None
+    if item.get("code") not in (0, None):
+        return None           # 该属性读失败（如型号不支持），当作没有
+    return item.get("value")
+
+
+def _miot_code(resp) -> int | None:
+    item = _miot_first(resp)
+    return None if item is None else item.get("code")
+
+
 class PlugLink:
     """python-miio 控制。⚠️ 需在真机上实测 siid/piid 后再填配置；本类不提供默认编号。"""
 
@@ -590,14 +622,24 @@ class PlugLink:
             value = bool(on)
             if self._path_used in (None, "set_property_by"):
                 try:
-                    dev.set_property_by(siid, piid, value)
+                    resp = dev.set_property_by(siid, piid, value)
+                    code = _miot_code(resp)
+                    if code not in (0, None):
+                        self.alerter.send("plug-error", "插座拒绝指令",
+                                          f"set_property_by({siid},{piid},{value}) 返回 code={code}")
+                        return False
                     self._path_used = "set_property_by"
                     return True
                 except Exception:
                     self._path_used = None
             # 回退路径：MIoT 通用 set_properties（python-miio 未适配该型号时用）
-            dev.send("set_properties", [{"did": f"set-{siid}-{piid}", "siid": siid,
-                                         "piid": piid, "value": value}])
+            resp = dev.send("set_properties", [{"did": f"set-{siid}-{piid}", "siid": siid,
+                                                "piid": piid, "value": value}])
+            code = _miot_code(resp)
+            if code not in (0, None):
+                self.alerter.send("plug-error", "插座拒绝指令",
+                                  f"set_properties({siid},{piid},{value}) 返回 code={code}")
+                return False
             self._path_used = "set_properties"
             return True
         except Exception as e:
@@ -611,7 +653,7 @@ class PlugLink:
         if self.dry_run:
             return None
         try:
-            v = self._device().get_property_by(int(c["power_siid"]), int(c["power_piid"]))
+            v = _miot_value(self._device().get_property_by(int(c["power_siid"]), int(c["power_piid"])))
             return round(float(v), 1) if v is not None else None
         except Exception:
             return None

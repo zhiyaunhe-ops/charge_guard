@@ -58,17 +58,17 @@
 
   "plug": {
     "enabled": true,
-    "ip": "",
+    "ip": "192.168.0.99",
     "token": "",
     "model": "",
-    "on_siid": null,
-    "on_piid": null,
-    "power_siid": null,
-    "power_piid": null,
+    "on_siid": 2,
+    "on_piid": 1,
+    "power_siid": 11,
+    "power_piid": 2,
     "readback_timeout_sec": 20,
-    "_comment": "⚠️ 必须填写 ip/token，以及真机实测出来的 siid/piid（先跑 --probe-plug，它只读）。买插座必须选 **Wi-Fi 版（miOT 局域网可控）**，不要蓝牙 Mesh 版。",
-    "_known_cuco_plug_v3": "米家智能插座3（cuco.plug.v3，ZNCZ301KK）按官方 miot-spec 的预期值，探测后核对：开关=on_siid 2 / on_piid 1；实时功率=power_siid 11 / power_piid 2。",
-    "_token_hygiene": "token 是密钥：优先写进 charge_guard.local.json（不进 git），或用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（优先级最高）。"
+    "_comment": "ip 与 siid/piid 已按真机实测填好（2026-09-25，cuco.plug.v3「笔记本插座」@192.168.0.99）：开关 2/1、实时功率 11/2。换插座/换型号必须重跑 --probe-plug（只读）。",
+    "_known_cuco_plug_v3": "米家智能插座3（cuco.plug.v3，ZNCZ301KK）：开关=2/1、实时功率=11/2、累计电量=11/1、故障=2/3、插座温度=12/2、开关次数=12/1（均已在真机读到）。",
+    "_token_hygiene": "token 是密钥：写进 charge_guard.local.json（不进 git），或用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（优先级最高）。"
   },
 
   "loop": {
