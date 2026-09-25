@@ -1,0 +1,52 @@
+{
+  "_comment": "手机端大脑（跑在 K70 的 Termux 里）配置。改完重启脚本生效。",
+
+  "esp32": {
+    "base_url": "http://192.168.1.50",
+    "status_path": "/api/status",
+    "port_path": "/api/port?port={port}&state={state}",
+    "port": "c1",
+    "timeout_sec": 8,
+    "on_value": "1",
+    "off_value": "0",
+    "_comment": "⚠️ base_url 填 ESP32 拿到 DHCP 后的局域网地址（建议在路由器上给它绑静态 IP）。",
+    "_comment2": "⚠️ 端口控制的确切路径以你烧进去那版固件为准 —— 用 `--probe` 逐个试探，找对了就会记住。",
+    "_comment3": "port 取 c1/c2/c3/a —— 手机上用的是第一个 C 口。"
+  },
+
+  "policy": {
+    "stop_at": 65,
+    "resume_at": 50,
+    "stable_readings": 2,
+    "immediate_off_margin": 3,
+    "immediate_on_margin": 3,
+    "temp_cutoff_c": 45.0,
+    "temp_resume_c": 40.0,
+    "_comment": "与 PC 侧 charge_guard.json 保持一致（同步自同一套依据，见 charge-strategy-review.md）。"
+  },
+
+  "loop": {
+    "interval_sec": 300,
+    "wake_lock": true,
+    "_comment": "wake_lock=true 会调 termux-wake-lock，防止 Android Doze 把循环冻住。"
+  },
+
+  "lost_contact": {
+    "short_break_sec": 600,
+    "stale_sec": 1800,
+    "stale_action_max_hours": 12
+  },
+
+  "log": {
+    "csv": "phone_guard_log.csv",
+    "keep_days": 60,
+    "_comment": "相对于脚本所在目录（Termux 家目录）写。"
+  },
+
+  "alert": {
+    "type": "console",
+    "webhook_url": "",
+    "repeat_sec": 21600,
+    "_comment": "告警默认只打日志。想推手机通知可以填 webhook_url（例如 server 酱 / Bark）。"
+  }
+}
