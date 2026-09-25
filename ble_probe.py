@@ -21,6 +21,7 @@ ble_probe.py —— 判定「PC 能不能用 BLE 看到酷态科10号充电器�
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -67,49 +68,31 @@ async def step1_adapter() -> None:
 
 async def step2_paired() -> int:
     out("")
-    out("[2] 已配对/已缓存的蓝牙设备（DeviceInformation 枚举，不走射频）")
+    out("[2] Windows 已知的蓝牙设备（Get-PnpDevice 枚举，不走射频）")
+    # 为什么不用 WinRT：本机 winrt 绑定里 DeviceInformation.find_all_async 与
+    # create_watcher 一律抛 TypeError: Invalid parameter count（2026-09-25 实测），
+    # 原实现因此只能打印「调用失败」，对判定没有价值。改用 Windows 自带工具枚举。
+    # 判据：只要能列出你配对过的耳机/鼠标，就说明**协议栈本身是好的** ——
+    # 但这**不等于**广播扫描可用，扫描要用 [3] 段加「已知在广播的设备」交叉验证。
     found = 0
     try:
-        from winrt.windows.devices.enumeration import DeviceInformation
-        from winrt.windows.devices.bluetooth import BluetoothDevice
-        selectors = []
-        try:
-            selectors.append(("BluetoothDevice.get_device_selector()",
-                              BluetoothDevice.get_device_selector()))
-        except Exception as e:
-            out(f"    取 selector 失败: {e}")
-        try:
-            selectors.append(("...from_pairing_state(True)",
-                              BluetoothDevice.get_device_selector_from_pairing_state(True)))
-        except Exception:
-            pass
-        for label, sel in selectors:
-            res = None
-            errs = []
-            # PyWinRT 3.x 只暴露了单个重载，且 doc 为 None —— 逐个试参数个数
-            for args in ((sel,), (sel, []), (sel, None)):
-                try:
-                    res = await DeviceInformation.find_all_async(*args)
-                    out(f"    {label}: 枚举成功（参数个数={len(args)}）→ {len(res)} 个")
-                    break
-                except Exception as e:
-                    errs.append(f"{len(args)}参: {type(e).__name__}: {e}")
-            if res is None:
-                out(f"    {label}: ❌ 调用失败（**这与「枚举到 0 个设备」不是一回事**）")
-                for e in errs:
-                    out(f"        {e}")
-                continue
-            for d in res:
-                found += 1
-                out(f"        {d.name!r}  id={d.id}")
+        p = subprocess.run(
+            ["pwsh", "-Command",
+             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+             "Get-PnpDevice -Class Bluetooth | Select-Object -ExpandProperty FriendlyName"],
+            capture_output=True, timeout=60)
+        names = [n.strip() for n in p.stdout.decode("utf-8", "replace").splitlines() if n.strip()]
+        found = len(names)
+        for n in names[:40]:
+            out(f"        {n}")
+        if found > 40:
+            out(f"        ...（共 {found} 条）")
     except Exception as e:
-        out(f"    步骤异常: {type(e).__name__}: {e}")
+        out(f"    ❌ 枚举失败: {type(e).__name__}: {e}")
     if found == 0:
-        out("    ⇒ 本次没拿到设备列表。注意：这不能直接推出「本机拿不到无线设备」——")
-        out("      得先看上面是「调用失败」还是「真的 0 个」。调用失败只是本脚本的 API")
-        out("      签名没试对，对判定没有价值。")
+        out("    ⇒ 一条都没有：先怀疑蓝牙协议栈/驱动，而不是充电器")
     else:
-        out(f"    ⇒ 列出了 {found} 条，说明设备枚举走通了（倾向：只是没扫到广播）")
+        out(f"    ⇒ {found} 条：协议栈本身是好的（注意：这不代表「广播扫描」也能用）")
     return found
 
 
@@ -140,6 +123,7 @@ async def step3_scan() -> int:
                 pass
 
         aborted = []
+        aborted_supported = False
 
         def on_aborted(sender, args):
             try:
@@ -150,7 +134,10 @@ async def step3_scan() -> int:
         w.add_received(on_recv)
         try:
             w.add_aborted(on_aborted)
+            aborted_supported = True
         except Exception:
+            # 本机 winrt 绑定（3.13 的 winrt-* 包）没有 add_aborted —— 只有 add_stopped。
+            # 那就**不能**再用「无 aborted 事件」当判据，必须明说，避免自欺。
             pass
         w.start()
         # start() 后的状态是关键判据：Started = 射频请求被接受；Aborted = 射频被拒
@@ -161,11 +148,16 @@ async def step3_scan() -> int:
         except Exception as e:
             st_name = f"读不到({e})"
         out(f"    监听器状态：{st_name}（Started = 射频请求已被接受）")
+        if aborted_supported:
+            out("    （本机可订阅 aborted 事件）")
+        else:
+            out("    ⚠️ 本机 winrt 绑定没有 add_aborted，无法订阅 aborted 事件 ⇒")
+            out("       「无 aborted ⇒ 射频通路正常」这条判据本次**不成立**，别引用它。")
         await asyncio.sleep(SCAN_SECONDS)
         w.stop()
         if aborted:
             out(f"    ⚠️ 触发 aborted 事件：{aborted} ⇒ 射频被拒，是环境/驱动问题")
-        else:
+        elif aborted_supported:
             out("    无 aborted 事件 ⇒ 射频通路正常")
     except Exception as e:
         out(f"    WinRT 监听失败: {type(e).__name__}: {e}")
@@ -189,12 +181,16 @@ async def step3_scan() -> int:
     if hits:
         out("⇒ 结果：找到疑似充电器。记下上面的地址，下一步才能拿 token 连它。")
     else:
-        out("⇒ 结果：没找到充电器。但先看上面的监听器状态：")
-        out("   · 状态=Started 且无 aborted ⇒ 射频通路正常，那 0 个就是「附近没有设备在广播」，")
-        out("     按顺序试：① 关掉手机米家 App（充电器一次只接受一个 BLE 连接）")
-        out("     ② 点亮充电器屏幕/插个设备保持唤醒 ③ 把充电器挪到 PC 旁边 1 米内 ④ 重跑本脚本")
-        out("   · 状态=Aborted 或出现 aborted 事件 ⇒ 是环境/驱动把射频拦了，那就不该指望 PC 当 BLE 主机，")
-        out("     考虑 ESP32 桥（仓库里有固件），或换一台机器跑")
+        out("⇒ 结果：这一次没扫到充电器/没收到任何广播。两种解释都要排除：")
+        out("   (甲) 附近确实没有设备在广播 —— 逐个排除：① 关掉手机米家 App")
+        out("        （充电器一次只接受一条 BLE 连接）② 点亮充电器屏幕保持唤醒")
+        out("        ③ 把充电器挪到 PC 旁边 1 米内 ④ 重跑本脚本")
+        out("   (乙) 本机「广播扫描」这条 API 路径是死的 —— [2] 段只能证明协议栈好，")
+        out("        **不能**证明扫描好。定案方法：把一个已知在广播的设备（手机开蓝牙，")
+        out("        或把蓝牙耳机从充电盒里拿出来）放到 PC 旁边再扫一次：")
+        out("        · 它出现了 ⇒ 扫描是好的，问题在充电器那一侧")
+        out("        · 它也不出现 ⇒ 扫描这条路在本机不通，PC 不适合当 BLE 主机 ⇒")
+        out("          换一台机器、用 ESP32 桥，或改走智能插座（见 actuator-control-path.md）")
     return len(seen)
 
 

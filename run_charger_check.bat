@@ -1,4 +1,5 @@
 @echo off
+setlocal
 cd /d "%~dp0"
 chcp 65001 >nul
 set "VENV=C:\Users\zhiya\.workbuddy\binaries\python\envs\default"
@@ -27,11 +28,15 @@ echo [2/2] Directed connect using the address from Mi Cloud + dump all props
 "%VENV%\Scripts\python.exe" -X utf8 charge_guard.py --probe-charger
 echo.
 echo ------------------------------------------------------------
-echo  How to read the result:
-echo   * scan saw nothing at all          -> radio/环境 issue, or it is asleep
-echo   * scan saw other devices only      -> charger asleep / Mi Home holds it / too far
-echo   * scan saw 3C:CD:73:37:B7:EE       -> address is right; step 2 should work
-echo   * saw a charger-like name but a DIFFERENT address
-echo                                      -> cloud address is stale/rotating; use the scanned one
+echo  Reports are saved next to this file:
+echo    ble_probe_report.txt       (scan: was it advertising?)
+echo    charger_probe_report.txt   (connect: what did it answer?)
+echo.
+echo  How to read the scan result:
+echo   * saw nothing at all            - radio issue, or it is asleep
+echo   * saw other devices only        - asleep / Mi Home holds it / too far
+echo   * saw 3C:CD:73:37:B7:EE         - address is right; step 2 should work
+echo   * charger-like name but a DIFFERENT address
+echo                                   - cloud address is stale or rotating
 echo ------------------------------------------------------------
 pause

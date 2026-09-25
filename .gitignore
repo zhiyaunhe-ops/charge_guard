@@ -12,6 +12,7 @@ phone/guard.out
 
 # 诊断脚本的产物（每次运行都会覆盖，结论已写进文档）
 ble_probe_report.txt
+charger_probe_report.txt
 
 # 密钥：插座 token 用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入
 charge_guard.local.json

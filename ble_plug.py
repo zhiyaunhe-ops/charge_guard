@@ -180,18 +180,42 @@ class ChargerBle:
 
     # ---- 排错用
     def probe(self) -> int:
-        """打印一次完整属性 dump，用来人工确认协议/端口/信号都通。"""
+        """打印一次完整属性 dump，用来人工确认协议/端口/信号都通。
+
+        同时逐行写进 charger_probe_report.txt（仓库根，已 gitignore）：
+        双击运行时窗口内容会被卷走，报告留在盘上，排错不用再抄一遍。
+        """
+        report = REPO_ROOT / "charger_probe_report.txt"
+        try:
+            report.unlink()
+        except OSError:
+            pass
+
+        def out(s: str = "") -> None:
+            print(s, flush=True)
+            try:
+                with report.open("a", encoding="utf-8") as f:
+                    f.write(s + "\n")
+                    f.flush()
+            except OSError:
+                pass
+
+        out(f"[charger] {self.describe()}")
         try:
             text = self._run(watch=int(self.c.get("probe_watch_sec", 5)))
         except Exception as e:
-            print(f"[charger] 探测失败：{e}")
+            out(f"[charger] 探测失败：{e}")
+            out(f"[charger] 报告：{report}")
             return 1
-        print(text)
+        for ln in text.splitlines():
+            out(ln)
         props = self.parse_props(text)
         mask = props.get((2, 16))
         if isinstance(mask, int):
             on = [k for k, b in PORT_BITS.items() if mask & (1 << b)]
-            print(f"\n解析结果：端口掩码 = 0x{mask:02X}，当前开着的口 = {on or '无'}")
+            out(f"\n解析结果：端口掩码 = 0x{mask:02X}，当前开着的口 = {on or '无'}")
+            out(f"[charger] 报告：{report}")
             return 0
-        print("\n⚠️ 没解析到端口掩码（siid=2 piid=16）")
+        out("\n⚠️ 没解析到端口掩码（siid=2 piid=16）")
+        out(f"[charger] 报告：{report}")
         return 1

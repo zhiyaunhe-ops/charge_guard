@@ -15,7 +15,7 @@
 | `dumpsys battery` 解析 | ✅ **真机验证通过**（含温度 0.1℃ 换算、AC powered） |
 | 判定逻辑（65/50 滞回、温度、稳定性门、失联分级） | ✅ 桩数据自测 **54 项全通过**（`--self-test`） |
 | 真机 dry-run 全链路 | ✅ 通过，记录见 `dryrun-real-device.txt` |
-| **BLE 执行端（直控充电器 C1 口）** | 🟡 **凭据已到手，真机连接待打通** —— token/address 已取到（2026-09-25）；首次 `--probe-charger` 报 `Device with address 3C:CD:73:37:B7:EE was not found`，即 PC 当前看不到它（息屏停播 / 米家 App 占连接 / 距离）→ 双击 `run_charger_check.bat` |
+| **BLE 执行端（直控充电器 C1 口）** | 🟡 **凭据已到手，真机连接未通** —— token/address 已取到；但广播扫描 ACTIVE/PASSIVE 两种模式都是 0 个（5+ 次），**「PC 能当 BLE 主机」这个地基还没验**。缺一个定案实验：拿已知在广播的设备（手机/耳机）验扫描，见 `actuator-control-path.md` 第七节 → 双击 `run_charger_check.bat` |
 | **断电后的 `AC powered` 回读** | ⛔ **未验证** —— dry-run 没真正断电 |
 | 端口掩码写入并回读确认 | 🟡 逻辑已实现（`ble_plug.py::set_power`），待真机验 |
 | ~~插座通断指令（python-miio）~~ | ⏸ 已放弃该路线：不需要买插座，改用 BLE 直控 |

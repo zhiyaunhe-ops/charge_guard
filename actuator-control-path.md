@@ -249,7 +249,57 @@ python fetch_tokens.py --region cn     # 登录小米账号（可能走 2FA/图�
 
 ---
 
-## 参考
+## 七、★ 追加（2026-09-25 晚）：扫描这条路的判据被削弱，缺一个定案实验
+
+凭据（token + address）已经拿到，但**真机连接还没打通**。这一节记录当晚的新证据，
+以及**我们之前一条结论被推翻**的部分 —— 下次接着做时不要引用旧说法。
+
+### 新证据
+
+| 项 | 结果 | 出处 |
+|---|---|---|
+| 凭据 | `address=3C:CD:73:37:B7:EE`，token 24 位 hex 已取到 | `fetch_tokens.py`（本轮修好 2FA 后才拿到） |
+| Windows 蓝牙协议栈 | **好的**：`Get-PnpDevice -Class Bluetooth` 列出 **33 条**（Bose QC35 II、WF-1000XM4/5/6、MX Master 3S…） | `ble_probe.py` [2] 段（已改用 Get-PnpDevice 枚举） |
+| 定向连接 | `BleakDeviceNotFoundError: Device with address 3C:CD:73:37:B7:EE was not found` | `charge_guard.py --probe-charger` |
+| 广播扫描 | **ACTIVE 与 PASSIVE 两种模式各 12–20s，都是 0 个广播**（累计 5+ 次运行，含两次并发、一次来自双击 bat） | `ble_probe.py` [3] 段 + 临时脚本对比两种模式 |
+
+### 被推翻的旧结论
+
+第四节里写的「监听器 STARTED 且不 abort ⇒ 射频请求被接受，所以 0 个广播只能解释为附近没有设备」
+**不成立**，理由是：
+
+- 本机 winrt 绑定**根本没有 `add_aborted`**（只有 `add_stopped`），原代码的订阅被 `try/except`
+  静默吞掉 —— 也就是说「无 aborted 事件」这条判据**从来没有被真正检查过**。
+- `DeviceInformation.find_all_async` 与 `create_watcher` 在这个 winrt 版本里**一律抛
+  `TypeError: Invalid parameter count`**，所以 [2] 段之前的「调用失败」也无诊断价值。
+- 两处都已修：`add_aborted` 订阅失败时会明说「本判据不成立」，
+  [2] 段改用 `Get-PnpDevice` 枚举（33 条），并且文案明确区分
+  「协议栈好」≠「广播扫描可用」。
+
+### 现在缺的定案实验（30 秒，一个动作）
+
+把一个**已知在广播**的设备放到 PC 旁边，再跑一次 `run_charger_check.bat`：
+
+- 手机（K70 Pro）开着蓝牙、屏幕点亮；**或**把蓝牙耳机（WF-1000XM5/XM6）从充电盒里拿出来。
+
+| 现象 | 结论 | 下一步 |
+|---|---|---|
+| 那个设备出现在扫描结果里 | 扫描是好的 ⇒ 问题在充电器那一侧 | 逐个排除：关米家 App、点亮屏幕、挪到 1 米内、重跑 |
+| 它也不出现 | **本机广播扫描这条路是死的**，PC 不适合当 BLE 主机 | 换一台机器 / ESP32 桥（¥20–40）/ 改走智能插座（第五节路线 2） |
+
+在定案之前，不要再假设「PC 能当 BLE 主机」——这是整条路线 A 的地基。
+
+### 顺带的工程改动
+
+- `run_charger_check.bat`：原文件是 **LF 换行 + 混入中文**，cmd.exe 解析时把每行首字符吃掉
+  （`echo`→`cho`），已统一为 **CRLF + 纯 ASCII**，并用 `cmd /c call` 实测通过。
+- 两个诊断脚本的产物**落盘**：`ble_probe_report.txt`、`charger_probe_report.txt`
+  （双击运行时窗口会被卷走，报告留在盘上）。
+- `charge_guard.py` 新增**本机覆盖层** `charge_guard.local.json`（已在 `.gitignore`）：
+  token 这类密钥写这里，受版本控制的 `charge_guard.json` 保持干净。
+
+---
+
 
 - `ohaiibuzzle/xiaomi-ad1204-python` — https://github.com/ohaiibuzzle/xiaomi-ad1204-python
 - `kairui1108/cuktech-ble-ha` — https://github.com/kairui1108/cuktech-ble-ha
