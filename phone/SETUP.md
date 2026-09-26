@@ -164,6 +164,42 @@ termux-job-scheduler --pending
 
 ---
 
+## 四之三、被 MIUI「强制停止」怎么办（2026-09-26 实测案例）
+
+**实况**：手机端守护 22:33 起来后一直跑到 **00:58** 被杀；手机侧看门狗日志最后一条是 **23:06**，
+之后 14 小时一次都没跑；`termux-job-scheduler --pending` 返回 **"No jobs found"**。
+⇒ 结论：**MIUI 把 Termux 强制停止时，Android 会连它的 JobScheduler 任务一起取消**
+（并且此后收不到 BOOT_COMPLETED，Termux:Boot 也失效），直到有人再次启动该应用。
+所以「手机侧自愈」这一层是会被一次性废掉的。
+
+**代价**：那段时间守护不在 ⇒ 插座保持最后状态 ⇒ 手机从 98% 掉到 39% 一直没充上
+（用户插上线时无人接管）。这不是危险，但显然不符合预期。
+
+### 两层补救（已实装）
+
+1. **`~/.bashrc` 钩子**（手机上）：Termux 一被启动，就自动执行
+   `~/charge_guard/ensure_running.sh`，守护随之回来。
+   ⇒ 于是「如何启动 Termux」成了唯一需要外部解决的问题。
+2. **PC 侧看门狗**（`run_watch_from_pc.bat` / `phone/watch_from_pc.py`）：
+   每 interval 秒检查一次；`am start com.termux` **可以解除强制停止状态**，钩子接管拉起守护。
+   若始终救不回来，还有兜底：能读到电量时按策略直接控插座
+   （≤resume_at 通电防耗尽，≥stop_at 断电防顶满）。
+
+⚠️ PC 侧看门狗要求手机的**无线调试开着**；PC 关机时它不在岗（那时只能靠上面第 1 层 + 手点 MIUI 设置）。
+
+### 判活的两个坑（都踩过，写代码时别再犯）
+
+| 写法 | 结果 |
+|---|---|
+| `ps -A \| grep charge_guard_phone.py` | **假阴性** —— Android 的 ps 只显示进程名 `python` |
+| 裸 `pgrep -f charge_guard_phone.py` | **假阳性** —— 调用者自己的命令行里含这个字符串，会自匹配 |
+| ✅ `grep -qa '^python' /proc/$p/cmdline` + `grep -qa 'charge_guard_phone.py' ...` | 准确 |
+
+另外守护自身加了**单实例保护**（`~/charge_guard/guard.pid`）：现在有四处会拉起它
+（手工、.bashrc 钩子、JobScheduler、PC 侧 am start），两个实例会各自控同一个插座，必须防。
+
+---
+
 ## 五、澎湃 OS 保活（不做这步会被杀）
 
 这台是 HyperOS，后台管控很激进。逐项设置：

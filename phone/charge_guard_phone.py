@@ -756,6 +756,30 @@ def self_test() -> int:
 
 
 # ---------------------------------------------------------------- main
+PIDFILE = HERE / "guard.pid"
+
+
+def _already_running() -> int | None:
+    """单实例保护：返回已在跑的 PID，或 None。
+
+    为什么需要：现在有三个地方会拉起守护（Termux 里的手工启动、~/.bashrc 钩子、
+    JobScheduler 看门狗、以及 PC 侧的 am start），叠加时可能起出两个实例。
+    两个实例会各自维护自己的判定状态去控同一个插座 —— 必须避免。
+    """
+    try:
+        pid = int(PIDFILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None                              # 进程不在了
+    return pid if "charge_guard_phone.py" in cmdline else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="跑在手机上的充电守护大脑（Termux）")
     ap.add_argument("--config", default=str(HERE / "charge_guard_phone.json"))
@@ -775,6 +799,17 @@ def main() -> int:
         return 0
 
     cfg = load_config(args.config)
+
+    busy = _already_running()
+    if busy is not None and not args.once:
+        print(f"已有实例在跑（PID {busy}），本实例退出 —— 单实例保护（同一插座不能被两个循环控）",
+              flush=True)
+        return 0
+    try:
+        PIDFILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
     if args.probe:
         PlugMiio(cfg["plug"]).probe()
         return 0
