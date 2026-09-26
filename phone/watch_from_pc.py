@@ -172,11 +172,14 @@ def main() -> int:
         serial = ensure_connected()
         log(f"    (连接阶段结束: {serial or '未连上'})")
         if not serial:
-            log("ADB 连不上手机（信息：无线调试可能被关）—— 本轮跳过，不碰插座")
+            log("ADB 不可用（端口变了/无线调试被关/需授权）—— 本轮无法判断，跳过；"
+                "注意手机端守护是自治的，ADB 断不影响它")
         else:
             age = guard_age_sec(serial)
             pids = guard_pids(serial)
-            if (age is not None and age < 180) or pids:
+            if age is None:
+                log("读不到 CSV 时间戳（本轮无法判断），跳过 —— 不做任何假设")
+            elif (age is not None and age < 180) or pids:
                 lvl = battery_level(serial)
                 log(f"守护在跑（CSV {age}s 前写过；PID={','.join(pids) or '?'}）  电量={lvl}%")
             else:
