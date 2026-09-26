@@ -103,11 +103,24 @@ def ensure_connected() -> str | None:
     return None
 
 
+AGE_CHECK = (
+    "now=$(date +%s); last=$(stat -c %Y /sdcard/charge_guard/phone_guard_log.csv 2>/dev/null || echo 0); "
+    "echo $((now - last))"
+)
+
 GUARD_CHECK = (
     "for p in $(pgrep -f charge_guard_phone.py 2>/dev/null); do "
     "grep -qa '^python' /proc/$p/cmdline 2>/dev/null && "
     "grep -qa 'charge_guard_phone.py' /proc/$p/cmdline 2>/dev/null && echo $p; done"
 )
+
+
+def guard_age_sec(serial: str) -> int | None:
+    """守护写 CSV 的"年龄"（秒）。这是主判据：跨 UID 读 /proc 会失败、裸 pgrep 会自匹配，
+    只有"它有没有在按周期写采样"是可靠的（2026-09-26 实测教训）。"""
+    rc, out = adb("-s", serial, "shell", AGE_CHECK)
+    out = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    return int(out) if out.isdigit() else None
 
 
 def guard_pids(serial: str) -> list[str]:
@@ -161,13 +174,14 @@ def main() -> int:
         if not serial:
             log("ADB 连不上手机（信息：无线调试可能被关）—— 本轮跳过，不碰插座")
         else:
+            age = guard_age_sec(serial)
             pids = guard_pids(serial)
-            if pids:
+            if (age is not None and age < 180) or pids:
                 lvl = battery_level(serial)
-                log(f"守护在跑 PID={','.join(pids)}  电量={lvl}%")
+                log(f"守护在跑（CSV {age}s 前写过；PID={','.join(pids) or '?'}）  电量={lvl}%")
             else:
                 lvl = battery_level(serial)
-                log(f"⚠️ 守护不在（电量={lvl}%）—— 用 am start 启动 Termux（.bashrc 钩子会拉起守护）")
+                log(f"⚠️ 守护不在（CSV {age}s 未更新，电量={lvl}%）—— am start 启动 Termux（钩子会拉起它）")
                 adb("-s", serial, "shell", "am start -n com.termux/.app.TermuxActivity")
                 time.sleep(8)
                 pids = guard_pids(serial)

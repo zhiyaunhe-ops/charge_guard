@@ -204,6 +204,22 @@ guard.out 里 13:44:38 采样到 64%（区间内 → 不动），下一次是 13
 
 ⚠️ PC 侧看门狗要求手机的**无线调试开着**；PC 关机时它不在岗（那时只能靠上面第 1 层 + 手点 MIUI 设置）。
 
+### 判活：只认「采样文件新鲜度」（2026-09-26 定稿）
+
+| 写法 | 结果 |
+|---|---|
+| `ps -A \| grep charge_guard_phone.py` | **假阴性** —— Android 的 ps 只显示进程名 `python` |
+| 裸 `pgrep -f charge_guard_phone.py` | **假阳性** —— 调用者自己命令行里含这个字符串，会自匹配 |
+| `grep -qa ^python /proc/<pid>/cmdline` | **在 adb shell 里假阴性** —— 跨 UID 读不到别的应用的 cmdline（游戏期间实测误报过一次） |
+| ✅ **看 `/sdcard/charge_guard/phone_guard_log.csv` 的时间戳** | 可靠：守护每 `interval_sec` 秒写一行，超过 180 s 没更新才算不在 |
+
+两个看门狗（手机侧 `ensure_running.sh`、PC 侧 `watch_from_pc.py`）现在都改用第 4 种。
+**这套判活顺带能抓到「进程活着但卡住」**——那是最难查的一类故障。
+
+另外 `ensure_running.sh` 现在**自更新**：发现 `/sdcard/charge_guard/ensure_running.sh` 比自身新，
+就自我替换并重跑。原因是 adb shell 写不进 Termux 私有目录，只能推 /sdcard，
+而这样升级就不再需要用户手动拷贝或打断正在进行的操作。
+
 ### 判活的两个坑（都踩过，写代码时别再犯）
 
 | 写法 | 结果 |
