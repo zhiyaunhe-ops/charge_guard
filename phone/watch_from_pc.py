@@ -137,6 +137,23 @@ def guard_pids(serial: str) -> list[str]:
     return [l.strip() for l in out.splitlines() if l.strip().isdigit()]
 
 
+CSV_TAIL = "tail -6 /sdcard/charge_guard/phone_guard_log.csv"
+
+
+def recent_rows(serial: str) -> list[dict]:
+    """读 CSV 最近几行。这是判断「守护活着但控不动插座」的关键证据：
+    控制失败时守护会写 `,error,...,插座请求失败`，连续出现就说明它发不出指令。"""
+    rc, out = adb("-s", serial, "shell", CSV_TAIL)
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 5 or parts[0] == "ts":
+            continue
+        rows.append({"ts": parts[0], "event": parts[1], "level": parts[2],
+                     "action": parts[5] if len(parts) > 5 else "", "note": parts[-1]})
+    return rows
+
+
 def battery_level(serial: str) -> int | None:
     rc, out = adb("-s", serial, "shell", "dumpsys battery | grep level")
     m = re.search(r"level:\s*(\d+)", out)
@@ -205,6 +222,32 @@ def main() -> int:
                             plug.set_port(False)
                         else:
                             log(f"   兜底无需动作（插座 on={on}，电量 {lvl}%）")
+        # ── 新增：控制通道健康度检查 ──
+        # 场景（2026-09-26 实况）：守护活着、判定正确，但每条插座指令都超时
+        # （手机那侧 UDP 发不出去），于是电量一路掉到 28% 没人管。
+        # 判据：CSV 里连续出现 error 行 ⇒ 手机端控不动 ⇒ PC 按 CSV 里的电量接管。
+        if serial:
+            rows = recent_rows(serial)
+            errs = [r for r in rows if r["event"] == "error"]
+            if len(errs) >= 3 and rows and rows[-1]["event"] == "error":
+                lvl_s = rows[-1]["level"]
+                lvl = int(lvl_s) if lvl_s.isdigit() else None
+                st = plug.read_status()
+                on = st.get("on")
+                log(f"⚠️ 手机端连续 {len(errs)} 次控制失败（最近电量 {lvl}%）⇒ PC 接管")
+                if lvl is None:
+                    log("   读不到电量，接管动作跳过（未知不动作）")
+                elif lvl <= resume_at and on is False:
+                    log(f"   电量 {lvl}% ≤ {resume_at}% 且插座断开 → PC 通电")
+                    plug.set_port(True)
+                elif lvl >= stop_at and on is True:
+                    log(f"   电量 {lvl}% ≥ {stop_at}% 且插座连通 → PC 断电")
+                    plug.set_port(False)
+                else:
+                    log(f"   无需动作（插座 on={on}，电量 {lvl}%）")
+            elif rows:
+                log(f"控制通道正常（最近一条 {rows[-1]['event']}，电量 {rows[-1]['level']}%）")
+
         if args.ticks and n >= args.ticks:
             return 0
         time.sleep(args.interval)

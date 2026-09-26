@@ -50,7 +50,7 @@ DEFAULTS = {
         "on_siid": 2, "on_piid": 1,
         "power_siid": 11, "power_piid": 2,
         "fault_siid": 2, "fault_piid": 3,
-        "timeout_sec": 4.0,
+        "timeout_sec": 6.0,
         "udp_port": 54321,
         "label": "充电器插座",
     },
@@ -305,28 +305,36 @@ class MiioClient:
                   + self._device_id + struct.pack(">I", (self._stamp + 1) & 0xFFFFFFFF))
         return header + hashlib.md5(header + self.token + payload).digest() + payload
 
-    def request(self, method: str, params):
-        if not self._stamp:
-            self.handshake()
-        self._id += 1
-        body = json.dumps({"id": self._id, "method": method, "params": params}).encode()
-        for attempt in (1, 2):
-            data = self._udp(self._pack(aes_cbc_encrypt(self._key, self._iv, body)))
-            if len(data) >= 32:
-                try:
-                    reply = json.loads(aes_cbc_decrypt(self._key, self._iv, data[32:]))
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        raise MiioError(f"响应解密失败：{e}") from e
-            elif attempt == 2:
-                raise MiioError(f"响应太短：{data.hex()}")
-            # 时间戳过期是常见原因：重握手再来一次
-            self._stamp = 0
-            self.handshake()
-        if "error" in reply:
-            raise MiioError(f"设备返回错误：{reply['error']}")
-        return reply.get("result")
+    def request(self, method: str, params, attempts: int = 4):
+        """发一条请求。**故意做成多次重试** —— 2026-09-26 的实测教训：
+
+        手机那侧的 UDP 会整段时间发不出去（当时是 Tailscale 的 tun1 把 Termux 的
+        局域网流量吞掉了），一次丢包就等于整条「通电」指令失败，而守护每 60 秒才试一次
+        ⇒ 手机在 34%~49% 之间一路掉电，谁都拉不起来。
+        miIO 的 get/set 都是幂等的，所以「多试几次」没有任何副作用。
+        """
+        last_err = None
+        for i in range(1, max(1, attempts) + 1):
+            try:
+                if not self._stamp:
+                    self.handshake()
+                self._id += 1
+                body = json.dumps({"id": self._id, "method": method, "params": params}).encode()
+                data = self._udp(self._pack(aes_cbc_encrypt(self._key, self._iv, body)))
+                if len(data) < 32:
+                    raise MiioError(f"响应太短：{data.hex()}")
+                reply = json.loads(aes_cbc_decrypt(self._key, self._iv, data[32:]))
+                if "error" in reply:
+                    raise MiioError(f"设备返回错误：{reply['error']}")
+                return reply.get("result")
+            except MiioError:
+                raise
+            except Exception as e:                      # 超时/解密失败等：重握手后重试
+                last_err = e
+                self._stamp = 0
+                if i < attempts:
+                    time.sleep(1.5)
+        raise MiioError(f"{type(last_err).__name__}: {last_err}（已试 {attempts} 次）")
 
     @staticmethod
     def _did(siid: int, piid: int) -> str:
