@@ -10,6 +10,7 @@ full_charge.once
 phone/phone_guard_log.csv
 phone/guard.out
 phone/watch_from_pc.log
+phone/guard.pid
 
 # 诊断脚本的产物（每次运行都会覆盖，结论已写进文档）
 ble_probe_report.txt
