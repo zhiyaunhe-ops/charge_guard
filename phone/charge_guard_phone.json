@@ -30,9 +30,9 @@
   },
 
   "loop": {
-    "interval_sec": 300,
+    "interval_sec": 60,
     "wake_lock": true,
-    "_comment": "wake_lock=true 会调 termux-wake-lock，防止 Android Doze 把循环冻住。"
+    "_comment": "wake_lock=true 会调 termux-wake-lock，防止 Android Doze 把循环冻住。interval_sec=60：原来 300s 时，40-60W 下 5 分钟能涨约 5%，实测冲过头到 71%（目标 65%）。手机侧读的是本机电量、控的是局域网插座，1 分钟一次成本可忽略。"
   },
 
   "lost_contact": {

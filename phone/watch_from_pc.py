@@ -49,7 +49,7 @@ def log(msg: str) -> None:
         pass
 
 
-def adb(*args, timeout: float = 30.0) -> tuple[int, str]:
+def adb(*args, timeout: float = 20.0) -> tuple[int, str]:
     try:
         p = subprocess.run([ADB, *args], capture_output=True, timeout=timeout)
         out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
@@ -63,7 +63,7 @@ def adb(*args, timeout: float = 30.0) -> tuple[int, str]:
 def open_ports(lo: int = 30000, hi: int = 51000) -> list[int]:
     def probe(p: int) -> int | None:
         s = socket.socket()
-        s.settimeout(0.3)
+        s.settimeout(0.2)
         try:
             s.connect((PHONE_IP, p))
             return p
@@ -72,8 +72,8 @@ def open_ports(lo: int = 30000, hi: int = 51000) -> list[int]:
         finally:
             s.close()
 
-    with ThreadPoolExecutor(max_workers=400) as ex:
-        return [r for r in ex.map(probe, range(lo, hi), chunksize=64) if r]
+    with ThreadPoolExecutor(max_workers=128) as ex:
+        return [r for r in ex.map(probe, range(lo, hi), chunksize=128) if r]
 
 
 def mdns_ports() -> list[int]:
@@ -155,7 +155,9 @@ def main() -> int:
     n = 0
     while True:
         n += 1
+        log(f"--- 第 {n} 轮开始 ---")          # 心跳：卡住时能立刻定位
         serial = ensure_connected()
+        log(f"    (连接阶段结束: {serial or '未连上'})")
         if not serial:
             log("ADB 连不上手机（信息：无线调试可能被关）—— 本轮跳过，不碰插座")
         else:

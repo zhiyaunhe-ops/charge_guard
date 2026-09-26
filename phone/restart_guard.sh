@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # 干净重启守护：更新文件 → 停旧实例 → 启动 → 写出校验结果
 cd "$HOME/charge_guard" || exit 1
-cp /sdcard/charge_guard/charge_guard_phone.py /sdcard/charge_guard/ensure_running.sh .
+cp /sdcard/charge_guard/charge_guard_phone.py /sdcard/charge_guard/charge_guard_phone.json /sdcard/charge_guard/ensure_running.sh .
 pkill -f charge_guard_phone.py
 sleep 2
 termux-wake-lock
