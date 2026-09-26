@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
 import subprocess
@@ -38,6 +39,13 @@ ADB = r"D:\MuMuPlayer-12.0\nx_main\adb.exe"
 PHONE_IP = "192.168.0.120"
 PHONE_HOME = "/sdcard/charge_guard"
 
+# 看门狗用**自己的 adb server 端口**，不跟 5037 混用。原因（2026-09-27 凌晨实测）：
+# 5037 上有别的程序共享（MuMu 模拟器会 kill/start-server 折腾它），还出现过别的
+# 上下文起的、本进程杀不掉的残留 server —— 那时 adb connect 会挂死到超时。
+# 独立端口后，第一个 adb 调用会自己在这个端口拉起 server，生命周期归我们管。
+ADB_SERVER_PORT = "5038"
+ADB_ENV = {**os.environ, "ANDROID_ADB_SERVER_PORT": ADB_SERVER_PORT}
+
 
 def log(msg: str) -> None:
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
@@ -51,7 +59,7 @@ def log(msg: str) -> None:
 
 def adb(*args, timeout: float = 20.0) -> tuple[int, str]:
     try:
-        p = subprocess.run([ADB, *args], capture_output=True, timeout=timeout)
+        p = subprocess.run([ADB, *args], capture_output=True, timeout=timeout, env=ADB_ENV)
         out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
         return p.returncode, out
     except subprocess.TimeoutExpired:
@@ -86,20 +94,32 @@ def mdns_ports() -> list[int]:
     return ports
 
 
+def _online_serial() -> str | None:
+    """只认 `adb devices` 里状态为 device（而不是 offline/unauthorized）的本机条目。"""
+    for line in adb("devices")[1].splitlines():
+        if PHONE_IP in line and line.rstrip().endswith("device"):
+            return line.split("\t")[0]
+    return None
+
+
 def ensure_connected() -> str | None:
-    """返回可用的 <ip:port> 串号，或 None。"""
-    connected = [l.split("\t")[0] for l in adb("devices")[1].splitlines()
-                 if PHONE_IP in l and "device" in l and "offline" not in l]
-    if connected:
-        return connected[0]
+    """返回可用的 <ip:port> 串号，或 None。
+
+    铁律（2026-09-26 实测）：**连上必须再验一次在线状态**。
+    `adb connect` 对 offline 残留条目也会回 "already connected"，但这种串号
+    后续所有 shell 都会失败 —— 必须以 `adb devices` 里的 device 状态为准。
+    （2026-09-27 补充实测：手机端 adbd 卡死时端口仍接受 TCP，connect 后状态是
+    offline —— 同样不能算连上。）"""
+    if (serial := _online_serial()):
+        return serial
     for p in mdns_ports():
-        rc, out = adb("connect", f"{PHONE_IP}:{p}", timeout=25)
-        if "connected" in out:
-            return f"{PHONE_IP}:{p}"
+        adb("connect", f"{PHONE_IP}:{p}", timeout=25)
+        if (serial := _online_serial()):
+            return serial
     for p in open_ports():
-        rc, out = adb("connect", f"{PHONE_IP}:{p}", timeout=25)
-        if "connected" in out:
-            return f"{PHONE_IP}:{p}"
+        adb("connect", f"{PHONE_IP}:{p}", timeout=25)
+        if (serial := _online_serial()):
+            return serial
     return None
 
 
@@ -186,6 +206,15 @@ def main() -> int:
     while True:
         n += 1
         log(f"--- 第 {n} 轮开始 ---")          # 心跳：卡住时能立刻定位
+        # ── 插座遥测：每轮先记一行（走 miIO，完全不依赖 ADB）──
+        # 2026-09-27 凌晨的教训：ADB 整段不可用时，插座是唯一可信的外部证据 ——
+        # on/power 能看出「手机在不在充电、守护有没有动作」，没有它整夜就只能干瞪眼。
+        try:
+            st = plug.read_status()
+            log(f"    插座遥测: on={st.get('on')} power={st.get('power_w')}W fault={st.get('fault')}"
+                if st else "    插座遥测: 读取失败（记空行，不据此做任何动作）")
+        except Exception as e:
+            log(f"    插座遥测: 异常 {type(e).__name__}: {e}")
         serial = ensure_connected()
         log(f"    (连接阶段结束: {serial or '未连上'})")
         if not serial:

@@ -558,6 +558,7 @@ class Guard:
         self.last_seen: float | None = None
         self.pending_action: str | None = None
         self.pending_count = 0
+        self.err_streak = 0
 
     def _same_decision(self, action: str) -> bool:
         """连续性门：要求**同一判定**连续出现 N 次。
@@ -572,10 +573,25 @@ class Guard:
     def _actuate(self, action: str, reading: dict, reason: str) -> None:
         want_on = (action == "on")
         if not self.plug.set_port(want_on):
+            self.err_streak += 1
             self.log.row("error", reading, action=action, reason=reason, note="插座请求失败")
             self.alerter.send("plug-error", "插座控制失败",
                               f"想把「{self.cfg['plug'].get('label', '插座')}」设为 {'通电' if want_on else '断电'}，失败。")
+            # 2026-09-26 实况：守护活着、判定正确，但 UDP 整段发不出去（当时是 Tailscale tun1），
+            # 单次告警被 repeat_sec 节流、没人发现，电量一路掉到 28%。
+            # 所以按「连续失败次数」升级：CSV 里持续出现 error 行（PC 侧看门狗据此接管），
+            # 并在达到阈值时发一次独立的升级告警（after 起，之后每 every 次重复，受 repeat_sec 节流）。
+            pol = self.cfg["policy"]
+            after = int(pol.get("plug_fail_alarm_after", 3))
+            every = int(pol.get("plug_fail_alarm_every", 10))
+            if self.err_streak == after or (self.err_streak > after and (self.err_streak - after) % every == 0):
+                self.log.row("error", reading, action=action, reason=reason,
+                             note=f"连续 {self.err_streak} 次控制失败 → 升级告警（手机端可能管不住插座，需 PC 接管）")
+                self.alerter.send("plug-dead", "插座连续控制失败",
+                                  f"已连续 {self.err_streak} 次写插座失败（手机端 UDP 可能被 VPN/省电吞掉）。\n"
+                                  f"处置：PC 侧 watch_from_pc.py 会按 CSV 的 error 行接管；也可用米家手动控。")
             return
+        self.err_streak = 0
         self.log.row("action", reading, action=action, reason=reason)
         self.plug_on = want_on
 
@@ -715,6 +731,34 @@ def self_test() -> int:
     g = Guard(cfg, FakePlug(fail=True), log, Alerter(cfg["alert"]))
     g._actuate("off", _r(70), "test")
     check("失败时 plug_on 保持未知", g.plug_on, None)
+
+    print("\n== 连续控制失败要升级告警（2026-09-26 控制通道整段瘫痪的实况）==")
+    al = Alerter(cfg["alert"])
+    sent: list[str] = []
+    al.send = lambda key, title, body: sent.append(key)      # 只记录不真发
+    g = Guard(cfg, FakePlug(fail=True), log, al)
+    for _ in range(2):
+        g._actuate("off", _r(70), "test")
+    check("前 2 次失败不升级", "plug-dead" in sent, False)
+    g._actuate("off", _r(70), "test")
+    check("第 3 次连续失败升级一次", sent.count("plug-dead"), 1)
+    for _ in range(10):
+        g._actuate("off", _r(70), "test")
+    check("第 13 次连续失败再升级一次", sent.count("plug-dead"), 2)
+    fp = FakePlug()
+    g = Guard(cfg, fp, log, al)
+    fp.fail = True
+    for _ in range(3):
+        g._actuate("off", _r(70), "test")
+    check("另一实例 3 次失败同样升级", sent.count("plug-dead"), 3)
+    fp.fail = False
+    g._actuate("off", _r(70), "test")
+    check("成功后失败计数清零", g.err_streak, 0)
+    fp.fail = True
+    g._actuate("off", _r(70), "test")
+    g._actuate("off", _r(70), "test")
+    check("清零后重新累计，2 次不升级", sent.count("plug-dead"), 3)
+    check("成功路径会重置 plug_on", g.plug_on, False)
 
     print("\n== 插座执行端：写成功 ≠ 真的切了（必须回读确认）==")
 

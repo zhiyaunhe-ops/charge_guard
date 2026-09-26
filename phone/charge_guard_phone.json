@@ -26,7 +26,9 @@
     "immediate_on_margin": 3,
     "temp_cutoff_c": 45.0,
     "temp_resume_c": 40.0,
-    "_comment": "与 PC 侧 charge_guard.json 保持一致（同步自同一套依据，见 charge-strategy-review.md）。"
+    "plug_fail_alarm_after": 3,
+    "plug_fail_alarm_every": 10,
+    "_comment": "与 PC 侧 charge_guard.json 保持一致（同步自同一套依据，见 charge-strategy-review.md）。plug_fail_*：连续 N 次写插座失败就升级告警（2026-09-26 控制通道整段瘫痪的教训），默认 3 / 每 10 次重复。"
   },
 
   "loop": {
