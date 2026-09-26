@@ -1,9 +1,7 @@
 {
   "_comment": "charge_guard 配置。改完重启脚本生效。所有阈值都可追溯，见 charge-strategy-review.md。",
-
   "actuator": "miio",
   "_comment_actuator": "miio = 小米智能插座（断 220V，整机一起断；2026-09-25 决定启用）；ble = 充电器端口直控（PC 直连未走通，见 actuator-control-path.md 第八节，保留备用）。",
-
   "charger_ble": {
     "python_exe": "C:\\Users\\zhiya\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe",
     "script": "third_party/xiaomi-ad1204-python/ad1204_ble.py",
@@ -18,15 +16,12 @@
     "_comment3": "端口掩码：siid=2 piid=16，c1=bit0 / c2=bit1 / c3=bit2 / a=bit3。",
     "_comment4": "本机覆盖层：load_config 先读 charge_guard.json，再叠加 charge_guard.local.json（同名键覆盖）。"
   },
-
-  "adb_path": "D:\\MuMuPlayer-12.0\\nx_main\\adb.exe",
-
+  "adb_path": ".workbuddy\\binaries\\platform-tools\\adb.exe",
   "phone": {
     "ip": "192.168.0.120",
     "port_cache_file": "adb_port_cache.json",
     "_comment_ip": "本机实测（2026-09-25）：K70 Pro 局域网地址 192.168.0.120；Tailscale 里它显示 offline，走局域网即可。"
   },
-
   "scan": {
     "low": 30000,
     "high": 50000,
@@ -34,7 +29,6 @@
     "workers": 600,
     "_comment": "2026-09-25 实测：20001 个端口、600 线程、0.35s 超时 = 12.3s 扫完；扫出 40023 与 41723，其中 41723 才是连接端口。"
   },
-
   "connect": {
     "attempts_per_port": 3,
     "restart_server_before_attempt": "auto",
@@ -43,7 +37,6 @@
     "_comment": "restart_server_before_attempt: always/auto/never。auto = 仅在上一次失败之后清 daemon —— 每次无脑 kill-server 会连带断掉其他 adb 连接（如 MuMu）。",
     "_comment2": "⚠️ 刚 connect 上时 shell 未就绪，`adb shell ...` 会返回空字符串且不报错 —— 所以在线判定必须用功能探针，不能只看 adb devices。"
   },
-
   "policy": {
     "stop_at": 65,
     "resume_at": 50,
@@ -55,7 +48,6 @@
     "full_charge_done_at": 98,
     "_comment": "stop_at/resume_at 按「常驻插电设备」定（BU-808 Table 4：4.06V≈80% 只有 600-1000 循环，3.92V≈65% 有 1200-2000）。不是随身机的 80/35。"
   },
-
   "plug": {
     "enabled": true,
     "ip": "192.168.0.99",
@@ -70,24 +62,20 @@
     "_known_cuco_plug_v3": "米家智能插座3（cuco.plug.v3，ZNCZ301KK）：开关=2/1、实时功率=11/2、累计电量=11/1、故障=2/3、插座温度=12/2、开关次数=12/1（均已在真机读到）。",
     "_token_hygiene": "token 是密钥：写进 charge_guard.local.json（不进 git），或用环境变量 CHARGE_GUARD_PLUG_TOKEN 注入（优先级最高）。"
   },
-
   "loop": {
     "interval_sec": 300,
     "readback_poll_sec": 2
   },
-
   "lost_contact": {
     "short_break_sec": 600,
     "stale_sec": 1800,
     "stale_action_max_hours": 12,
     "_comment": "短断保持原状；失联 > stale_sec 且最后一次读数 >= stop_at → 断电 + 告警；读数未知 → 保持通电 + 告警。"
   },
-
   "log": {
     "csv": "charge_guard_log.csv",
     "keep_days": 30
   },
-
   "alert": {
     "type": "console",
     "webhook_url": "",

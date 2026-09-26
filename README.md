@@ -47,7 +47,8 @@
 python -X utf8 charge_guard.py --self-test
 
 # 1) 填配置：phone.ip、adb_path（建议写全路径）、plug.*
-#    本机 adb 全路径：D:\MuMuPlayer-12.0\nx_main\adb.exe
+#    本机 adb 全路径（项目自带的 platform-tools，不占用 MuMu 的 adb）：
+#    .workbuddy/binaries/platform-tools/adb.exe
 
 # 2) 只读数不控电，确认真机通路
 python -X utf8 charge_guard.py --dry-run
