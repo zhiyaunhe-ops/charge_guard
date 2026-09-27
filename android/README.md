@@ -15,7 +15,7 @@ gh run download --name chargeguard-debug-apk -D android/dist/
 ```
 
 技术栈：AGP 8.7.3 / Gradle 8.10.2 / Chaquopy 17.0.0（MIT）/ compileSdk 35 / targetSdk 33 / minSdk 24 /
-arm64-v8a（K70 Pro）+ x86_64（MuMu 可先试）。无任何第三方 Android 依赖（没有 androidx）。
+仅 arm64-v8a（K70 Pro）。无任何第三方 Android 依赖（没有 androidx）。
 
 ## 与 Termux 版的关系（重要）
 

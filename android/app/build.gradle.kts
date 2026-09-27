@@ -14,8 +14,9 @@ android {
         versionCode = 1
         versionName = "1.0"
         ndk {
-            // arm64 给 K70 Pro；x86_64 给 MuMu（先在模拟器里验一轮再上真机）
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // 只留 arm64（K70 Pro）。x86_64 是给 MuMu 试跑的，代价是整个 Python 运行时 ×2
+            //（实测 +10.3MB），手机是唯一目标后就不值得带。要在模拟器试跑时临时加回。
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
