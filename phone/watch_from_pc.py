@@ -211,80 +211,90 @@ def main() -> int:
     while True:
         n += 1
         log(f"--- 第 {n} 轮开始 ---")          # 心跳：卡住时能立刻定位
-        # ── 插座遥测：每轮先记一行（走 miIO，完全不依赖 ADB）──
-        # 2026-09-27 凌晨的教训：ADB 整段不可用时，插座是唯一可信的外部证据 ——
-        # on/power 能看出「手机在不在充电、守护有没有动作」，没有它整夜就只能干瞪眼。
+        # 整轮兜底：看门狗自己绝不能死。2026-09-27 实测它静默死过一次（15:55 后无任何输出），
+        # 当时主循环没有兜底 try，任何一轮的意外异常都会整个杀掉进程且无人知晓。
         try:
-            st = plug.read_status()
-            log(f"    插座遥测: on={st.get('on')} power={st.get('power_w')}W fault={st.get('fault')}"
-                if st else "    插座遥测: 读取失败（记空行，不据此做任何动作）")
+            round_once(plug, resume_at, stop_at)
         except Exception as e:
-            log(f"    插座遥测: 异常 {type(e).__name__}: {e}")
-        serial = ensure_connected()
-        log(f"    (连接阶段结束: {serial or '未连上'})")
-        if not serial:
-            log("ADB 不可用（端口变了/无线调试被关/需授权）—— 本轮无法判断，跳过；"
-                "注意手机端守护是自治的，ADB 断不影响它")
-        else:
-            age = guard_age_sec(serial)
-            pids = guard_pids(serial)
-            if age is None:
-                log("读不到 CSV 时间戳（本轮无法判断），跳过 —— 不做任何假设")
-            elif (age is not None and age < 180) or pids:
-                lvl = battery_level(serial)
-                log(f"守护在跑（CSV {age}s 前写过；PID={','.join(pids) or '?'}）  电量={lvl}%")
-            else:
-                lvl = battery_level(serial)
-                log(f"⚠️ 守护不在（CSV {age}s 未更新，电量={lvl}%）—— am start 启动 Termux（钩子会拉起它）")
-                adb("-s", serial, "shell", "am start -n com.termux/.app.TermuxActivity")
-                time.sleep(8)
-                pids = guard_pids(serial)
-                if pids:
-                    log(f"✅ 已救回：PID={','.join(pids)}")
-                else:
-                    log("❌ am start 后守护仍不在；走兜底：按电量直接控插座")
-                    if lvl is None:
-                        log("   读不到电量，兜底不动插座（未知不动作）")
-                    else:
-                        st = plug.read_status()
-                        on = st.get("on")
-                        if lvl <= resume_at and on is False:
-                            log(f"   电量 {lvl}% ≤ {resume_at}% 且插座是断的 → 通电（防手机耗尽）")
-                            plug.set_port(True)
-                        elif lvl >= stop_at and on is True:
-                            log(f"   电量 {lvl}% ≥ {stop_at}% 且插座是通的 → 断电（防顶在满电）")
-                            plug.set_port(False)
-                        else:
-                            log(f"   兜底无需动作（插座 on={on}，电量 {lvl}%）")
-        # ── 新增：控制通道健康度检查 ──
-        # 场景（2026-09-26 实况）：守护活着、判定正确，但每条插座指令都超时
-        # （手机那侧 UDP 发不出去），于是电量一路掉到 28% 没人管。
-        # 判据：CSV 里连续出现 error 行 ⇒ 手机端控不动 ⇒ PC 按 CSV 里的电量接管。
-        if serial:
-            rows = recent_rows(serial)
-            errs = [r for r in rows if r["event"] == "error"]
-            if len(errs) >= 3 and rows and rows[-1]["event"] == "error":
-                lvl_s = rows[-1]["level"]
-                lvl = int(lvl_s) if lvl_s.isdigit() else None
-                st = plug.read_status()
-                on = st.get("on")
-                log(f"⚠️ 手机端连续 {len(errs)} 次控制失败（最近电量 {lvl}%）⇒ PC 接管")
-                if lvl is None:
-                    log("   读不到电量，接管动作跳过（未知不动作）")
-                elif lvl <= resume_at and on is False:
-                    log(f"   电量 {lvl}% ≤ {resume_at}% 且插座断开 → PC 通电")
-                    plug.set_port(True)
-                elif lvl >= stop_at and on is True:
-                    log(f"   电量 {lvl}% ≥ {stop_at}% 且插座连通 → PC 断电")
-                    plug.set_port(False)
-                else:
-                    log(f"   无需动作（插座 on={on}，电量 {lvl}%）")
-            elif rows:
-                log(f"控制通道正常（最近一条 {rows[-1]['event']}，电量 {rows[-1]['level']}%）")
+            log(f"⚠️ 本轮异常（忽略，继续下一轮）：{type(e).__name__}: {e}")
 
         if args.ticks and n >= args.ticks:
             return 0
         time.sleep(args.interval)
+
+
+def round_once(plug, resume_at: int, stop_at: int) -> None:
+    """一轮完整检查：插座遥测 → 连手机 → 判活/救活 → 控制通道健康度。"""
+    # ── 插座遥测：每轮先记一行（走 miIO，完全不依赖 ADB）──
+    # 2026-09-27 凌晨的教训：ADB 整段不可用时，插座是唯一可信的外部证据 ——
+    # on/power 能看出「手机在不在充电、守护有没有动作」，没有它整夜就只能干瞪眼。
+    try:
+        st = plug.read_status()
+        log(f"    插座遥测: on={st.get('on')} power={st.get('power_w')}W fault={st.get('fault')}"
+            if st else "    插座遥测: 读取失败（记空行，不据此做任何动作）")
+    except Exception as e:
+        log(f"    插座遥测: 异常 {type(e).__name__}: {e}")
+    serial = ensure_connected()
+    log(f"    (连接阶段结束: {serial or '未连上'})")
+    if not serial:
+        log("ADB 不可用（端口变了/无线调试被关/需授权）—— 本轮无法判断，跳过；"
+            "注意手机端守护是自治的，ADB 断不影响它")
+    else:
+        age = guard_age_sec(serial)
+        pids = guard_pids(serial)
+        if age is None:
+            log("读不到 CSV 时间戳（本轮无法判断），跳过 —— 不做任何假设")
+        elif (age is not None and age < 180) or pids:
+            lvl = battery_level(serial)
+            log(f"守护在跑（CSV {age}s 前写过；PID={','.join(pids) or '?'}）  电量={lvl}%")
+        else:
+            lvl = battery_level(serial)
+            log(f"⚠️ 守护不在（CSV {age}s 未更新，电量={lvl}%）—— am start 启动 Termux（钩子会拉起它）")
+            adb("-s", serial, "shell", "am start -n com.termux/.app.TermuxActivity")
+            time.sleep(8)
+            pids = guard_pids(serial)
+            if pids:
+                log(f"✅ 已救回：PID={','.join(pids)}")
+            else:
+                log("❌ am start 后守护仍不在；走兜底：按电量直接控插座")
+                if lvl is None:
+                    log("   读不到电量，兜底不动插座（未知不动作）")
+                else:
+                    st = plug.read_status()
+                    on = st.get("on")
+                    if lvl <= resume_at and on is False:
+                        log(f"   电量 {lvl}% ≤ {resume_at}% 且插座是断的 → 通电（防手机耗尽）")
+                        plug.set_port(True)
+                    elif lvl >= stop_at and on is True:
+                        log(f"   电量 {lvl}% ≥ {stop_at}% 且插座是通的 → 断电（防顶在满电）")
+                        plug.set_port(False)
+                    else:
+                        log(f"   兜底无需动作（插座 on={on}，电量 {lvl}%）")
+    # ── 控制通道健康度检查 ──
+    # 场景（2026-09-26 实况）：守护活着、判定正确，但每条插座指令都超时
+    # （手机那侧 UDP 发不出去），于是电量一路掉到 28% 没人管。
+    # 判据：CSV 里连续出现 error 行 ⇒ 手机端控不动 ⇒ PC 按 CSV 里的电量接管。
+    if serial:
+        rows = recent_rows(serial)
+        errs = [r for r in rows if r["event"] == "error"]
+        if len(errs) >= 3 and rows and rows[-1]["event"] == "error":
+            lvl_s = rows[-1]["level"]
+            lvl = int(lvl_s) if lvl_s.isdigit() else None
+            st = plug.read_status()
+            on = st.get("on")
+            log(f"⚠️ 手机端连续 {len(errs)} 次控制失败（最近电量 {lvl}%）⇒ PC 接管")
+            if lvl is None:
+                log("   读不到电量，接管动作跳过（未知不动作）")
+            elif lvl <= resume_at and on is False:
+                log(f"   电量 {lvl}% ≤ {resume_at}% 且插座断开 → PC 通电")
+                plug.set_port(True)
+            elif lvl >= stop_at and on is True:
+                log(f"   电量 {lvl}% ≥ {stop_at}% 且插座连通 → PC 断电")
+                plug.set_port(False)
+            else:
+                log(f"   无需动作（插座 on={on}，电量 {lvl}%）")
+        elif rows:
+            log(f"控制通道正常（最近一条 {rows[-1]['event']}，电量 {rows[-1]['level']}%）")
 
 
 if __name__ == "__main__":

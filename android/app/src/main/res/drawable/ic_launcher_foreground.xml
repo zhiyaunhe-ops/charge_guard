@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 白色电池 + 闪电（充电中），画在 108dp 视口的中央安全区里 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 电池盖 -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M50,24 h8 a2,2 0 0 1 2,2 v6 h-12 v-6 a2,2 0 0 1 2,-2 z" />
+    <!-- 电池身 -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M42,32 h24 a4,4 0 0 1 4,4 v44 a4,4 0 0 1 -4,4 h-24 a4,4 0 0 1 -4,-4 v-44 a4,4 0 0 1 4,-4 z" />
+    <!-- 闪电（挖出橙色） -->
+    <path android:fillColor="#FF6900"
+        android:pathData="M57,42 L48,60 L54.5,60 L50,74 L62,55 L55.5,55 L61,42 Z" />
+    <!-- 电量条（顶部示意） -->
+    <path android:fillColor="#FFD9B3"
+        android:pathData="M42,36 h24 v3 h-24 z" />
+</vector>
