@@ -1,0 +1,58 @@
+{
+  "_comment": "手机端大脑（跑在 K70 的 Termux 里）配置。改完重启脚本生效。",
+
+  "plug": {
+    "ip": "192.168.0.99",
+    "token": "",
+    "on_siid": 2,
+    "on_piid": 1,
+    "power_siid": 11,
+    "power_piid": 2,
+    "fault_siid": 2,
+    "fault_piid": 3,
+    "timeout_sec": 4.0,
+    "udp_port": 54321,
+    "label": "充电器插座",
+    "_comment": "小米智能插座（miIO over LAN，UDP 54321）。siid/piid 已按真机 cuco.plug.v3 验证：开关 2/1、功率 11/2、故障 2/3。",
+    "_comment2": "换插座或换型号后，用 --probe（只读）重新核对编号。",
+    "_token_hygiene": "token 是密钥：放进 charge_guard_phone.local.json（已在 .gitignore），不要写在这里。"
+  },
+
+  "policy": {
+    "stop_at": 65,
+    "resume_at": 50,
+    "stable_readings": 2,
+    "immediate_off_margin": 3,
+    "immediate_on_margin": 3,
+    "temp_cutoff_c": 45.0,
+    "temp_resume_c": 40.0,
+    "plug_fail_alarm_after": 3,
+    "plug_fail_alarm_every": 10,
+    "_comment": "与 PC 侧 charge_guard.json 保持一致（同步自同一套依据，见 charge-strategy-review.md）。plug_fail_*：连续 N 次写插座失败就升级告警（2026-09-26 控制通道整段瘫痪的教训），默认 3 / 每 10 次重复。"
+  },
+
+  "loop": {
+    "interval_sec": 60,
+    "wake_lock": true,
+    "_comment": "wake_lock=true 会调 termux-wake-lock，防止 Android Doze 把循环冻住。interval_sec=60：原来 300s 时，40-60W 下 5 分钟能涨约 5%，实测冲过头到 71%（目标 65%）。手机侧读的是本机电量、控的是局域网插座，1 分钟一次成本可忽略。"
+  },
+
+  "lost_contact": {
+    "short_break_sec": 600,
+    "stale_sec": 1800,
+    "stale_action_max_hours": 12
+  },
+
+  "log": {
+    "csv": "phone_guard_log.csv",
+    "keep_days": 60,
+    "_comment": "相对于脚本所在目录（Termux 家目录）写。"
+  },
+
+  "alert": {
+    "type": "console",
+    "webhook_url": "",
+    "repeat_sec": 21600,
+    "_comment": "告警默认只打日志。想推手机通知可以填 webhook_url（例如 server 酱 / Bark）。"
+  }
+}

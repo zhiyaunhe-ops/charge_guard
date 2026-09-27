@@ -1,0 +1,47 @@
+name: android-build
+
+# 本机没有 Android SDK —— APK 一律在这台 GitHub Actions 机器上构建。
+# 产物（app-debug.apk）在 Actions 页面的 artifact 里，用 `gh run download` 拉回来。
+
+on:
+  push:
+    branches: [phone-guard, main, master]
+    paths:
+      - "android/**"
+      - "phone/charge_guard_phone.py"
+      - "phone/charge_guard_phone.json"
+      - ".github/workflows/android-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shared python sources must be in sync
+        run: |
+          diff phone/charge_guard_phone.py android/app/src/main/python/charge_guard_phone.py
+          diff phone/charge_guard_phone.json android/app/src/main/python/charge_guard_phone.json
+
+      - name: Guard self-test (pure stdlib, no device needed)
+        run: python3 -X utf8 phone/charge_guard_phone.py --self-test
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chargeguard-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

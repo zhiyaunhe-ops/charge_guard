@@ -23,3 +23,10 @@ phone/charge_guard_phone.local.json
 
 # 第三方实现：各自有自己的 git 仓库，不 vendored 进来（克隆方式见 README）
 third_party/
+
+# Android 构建产物（APK 在 GitHub Actions 上构建，本机不留）
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+android/dist/
