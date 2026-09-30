@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 REPORT = Path(__file__).with_name("ble_probe_report.txt")
-# 充电器已知的型号串与关键词（来自开源实现的 README + Luna 在米家里看到的）
+# 充电器已知的型号串与关键词（来自开源实现的 README + 机主 在米家里看到的）
 KEYWORDS = ("njcuk", "ad1204", "cuktech", "酷态科")
 SCAN_SECONDS = 20.0
 

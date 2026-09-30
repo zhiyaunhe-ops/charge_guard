@@ -7,7 +7,24 @@
 
 ---
 
-## 当前状态（2026-09-25）
+## 验证环境与当前形态（2026-10-01）
+
+| 项 | 值 |
+|---|---|
+| 机型 | **Redmi K70 Pro**（23117RK66C） |
+| 系统 | 澎湃 OS 3.0（OS3.0 / Android 16 / SDK 36） |
+| 执行端 | 小米智能插座3 `cuco.plug.v3`（Wi-Fi/miOT 局域网直控；开关 `2/1`、功率 `11/2`、故障 `2/3` 已真机验证） |
+| 大脑 | **本仓库 `android/` 构建的 APK**：前台服务常驻 + 开机自启，Chaquopy 17 跑与 `phone/charge_guard_phone.py` **同一份**判定/miIO/AES 代码（CI diff 钉同步），自测 28/28 |
+| 构建与产物 | GitHub Actions（`android-build.yml`），APK ≈18.4MB，仅 `arm64-v8a` |
+| 观测 | 守护写 CSV 到 `/sdcard/charge_guard/phone_guard_log.csv`；PC 侧 `phone/watch_from_pc.py` 每 4 分钟记插座遥测（on/功率/故障） |
+| 真机验证 | 滞回全周期多次自主走通（掉到 50% 通电 / 充到 ≥65% 断电）；ADB 断网 12.8h 期间全自治；`install -r` 升级、划掉卡片不死（前台服务） |
+
+> `android/debug.keystore` 是**刻意入库**的固定 debug 签名（让 CI 产物可以直接 `install -r` 覆盖升级），
+> 只签 debug 包，密码就在 `android/app/build.gradle.kts`。
+
+---
+
+## 当前状态（2026-09-25，历史快照——现状见上一节）
 
 | 部分 | 状态 |
 |---|---|

@@ -36,7 +36,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 LOG = HERE / "watch_from_pc.log"
 # 用项目自己的 platform-tools adb（.workbuddy/binaries/，gitignored），**不占用 MuMu 的 adb**
-# （2026-09-27 Luna 要求：MuMu 的 adb 留给模拟器自己用，别互相折腾）。
+# （2026-09-27 机主 要求：MuMu 的 adb 留给模拟器自己用，别互相折腾）。
 # 端口也独立（5038）：版本不同会互相杀 server，分开后两边谁也碰不到谁。
 ADB = str(ROOT / ".workbuddy" / "binaries" / "platform-tools" / "adb.exe")
 if not Path(ADB).exists():
