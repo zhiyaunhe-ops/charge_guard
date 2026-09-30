@@ -26,7 +26,11 @@
             </intent-filter>
         </activity>
 
-        <service android:name=".GuardService" android:exported="false" />
+        <!-- exported=true：让 adb（am start-foreground-service）能直接拉起守护，
+             这样「写好 config + 拉起服务」完全不依赖 UI 自动化（2026-10-01 实测
+             合成键盘输入在这台 HyperOS 上不可靠：字段显示有值、getText() 为空）。
+             个人设备，可接受。 -->
+        <service android:name=".GuardService" android:exported="true" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
