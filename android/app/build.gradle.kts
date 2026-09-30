@@ -24,6 +24,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    // 固定 debug 签名：CI 每次运行随机生成的 debug key 会让 install -r 报
+    // SIGNATURES DO NOT MATCH（2026-10-01 实测），只能卸载重装、配置全丢。
+    // keystore 是 PKCS12、密码就在下面 —— 私有仓库 + 只签 debug 包，接受。
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("../debug.keystore")
+            storePassword = "chargeguard"
+            keyAlias = "chargeguard"
+            keyPassword = "chargeguard"
+            storeType = "PKCS12"
+        }
+    }
 }
 
 // Python 源码与数据文件放 app/src/main/python/（Chaquopy 默认目录）。
