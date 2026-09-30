@@ -49,7 +49,10 @@ def _load_cfg(app_dir: str) -> dict:
     user_path = os.path.join(app_dir, "config.json")
     if os.path.exists(user_path):
         with open(user_path, "r", encoding="utf-8") as f:
-            cg._deep_merge(cfg, json.load(f))
+            # ⚠️ _deep_merge 是纯函数（返回合并结果、不改 base）——必须接住返回值。
+            # 2026-10-01 实测：扔掉返回值 ⇒ 永远用空 token 的 BASE_CFG，
+            # 插座指令全部「token 必须是 32 个 hex 字符，当前 0 字节」。
+            cfg = cg._deep_merge(cfg, json.load(f))
     return cfg
 
 
