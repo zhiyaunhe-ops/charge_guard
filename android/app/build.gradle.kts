@@ -11,8 +11,8 @@ android {
         applicationId = "com.zhiyaunhe.chargeguard"
         minSdk = 24
         targetSdk = 33          // 刻意不追新：33 以下前台服务不必声明 type，通知权限也少一道弹窗
-        versionCode = 4
-        versionName = "1.3"   // 看门狗 SIGKILL（System.exit 挂死实测）+ 栈落盘 + 复活闹钟链
+        versionCode = 5
+        versionName = "1.4"   // Java 侧看门狗（GIL 冻结免疫）：栈落盘 stall_dump_java.txt + killProcess；闹钟链缩到 5 分钟
         ndk {
             // 只留 arm64（K70 Pro）。x86_64 是给 MuMu 试跑的，代价是整个 Python 运行时 ×2
             //（实测 +10.3MB），手机是唯一目标后就不值得带。要在模拟器试跑时临时加回。

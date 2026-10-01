@@ -54,9 +54,13 @@ Termux 时代的 CSV 判活，误判「守护不在」→ 每 5 分钟 `am start
   `files/stall_dump.txt`（logcat 会轮转、14:30 那次证据就是这么丢的）并镜像到
   `python.stderr`，然后 **SIGKILL 自杀**。三种死法都实测过：os.abort() 弹闪退窗
   （14:10）、System.exit(0) 在 JVM 关闭钩子上挂死 4.7h（14:30→19:11）、SIGKILL 立死无弹窗；
-- **复活闹钟链**（v2.2）：服务每次启动预约 15 分钟后的一次性闹钟，`GuardAlarmReceiver`
+- **复活闹钟链**（v2.2）：服务每次启动预约 **5 分钟**后的一次性闹钟，`GuardAlarmReceiver`
   拉起服务并续约 —— 进程死透后闹钟照常触发（除非 force-stop），是 START_STICKY 被
   HyperOS 拦截后唯一验证可行的自动补位通道；「停止」按钮置 `should_run=false` 让链空转；
+- **Java 侧看门狗**（v2.3）：20:48 的 stall 连 python 看门狗都一起冻住了（GIL 被卡死线程
+  持有，stall_count 没来得及自增）——这条线程不碰 python，只盯 `status.json` 的 mtime，
+  超时把全部线程的 Java 栈落盘 `files/stall_dump_java.txt`（能看到卡在哪个 Java 方法）
+  再 `killProcess`。python 看门狗管 GIL 释放型卡死，Java 看门狗兜 GIL 冻结型卡死；
 - `GuardService.onTaskRemoved`：闹钟预约 3s 后重拉前台服务（ROM 可能拦，尽力而为；
   最可靠的仍是用户侧三项设置）；
 - `android_main.SafeLog`：写日志失败永不外抛（v2.1 起主路径=私有目录，兼自愈句柄）；

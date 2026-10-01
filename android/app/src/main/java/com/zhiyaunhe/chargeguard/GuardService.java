@@ -17,6 +17,10 @@ import android.util.Log;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
+import org.json.JSONObject;
+
+import java.nio.charset.StandardCharsets;
+
 /** 前台服务：常驻跑 Python 守护循环（charge_guard_phone 的判定 + miIO 控插座）。
  *
  *  为什么用前台服务：Termux 方案死于「应用被划掉 / MIUI 强制停止」——前台服务是
@@ -30,7 +34,9 @@ public class GuardService extends Service {
 
     private PowerManager.WakeLock wakeLock;
     private Thread supervisor;
+    private Thread javaWatchdog;
     private volatile boolean running = false;
+    private volatile long startedAt = 0;   // 服务启动时刻：看门狗只查启动之后的 mtime
 
     @Override
     public void onCreate() {
@@ -49,9 +55,73 @@ public class GuardService extends Service {
             wakeLock.setReferenceCounted(false);
         }
         wakeLock.acquire();
+        startedAt = System.currentTimeMillis();
         scheduleRevivalAlarm();
         startPython();
+        startJavaWatchdog();
         return START_STICKY;
+    }
+
+    /** Java 侧卡死看门狗（v2.3）：python 侧看门狗（android_main._watchdog）会被 GIL
+     *  一起冻住 —— 2026-10-01 20:48 那次 stall 里三个 python 线程全无声，stall_count
+     *  都没来得及自增。这条线程不碰 python，只盯 status.json 的 mtime（守护每轮刷新）；
+     *  超时 ⇒ 把全部线程的 Java 栈（能看到卡在哪个 Java 方法，如 registerReceiver）
+     *  落盘 files/stall_dump_java.txt，再 killProcess（SIGKILL，立死无弹窗）。 */
+    private synchronized void startJavaWatchdog() {
+        if (javaWatchdog != null && javaWatchdog.isAlive()) return;
+        final long intervalSec = readIntervalSec();
+        final long thresholdMs = Math.max(240_000L, intervalSec * 4000 + 60_000);
+        javaWatchdog = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(30_000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (!running) return;
+                java.io.File status = new java.io.File(getFilesDir(), "status.json");
+                long mtime = status.exists() ? status.lastModified() : 0L;
+                long ref = Math.max(mtime, startedAt);
+                if (ref > 0 && System.currentTimeMillis() - ref > thresholdMs) {
+                    dumpThreadsAndKill(thresholdMs, mtime);
+                    return;
+                }
+            }
+        }, "java-watchdog");
+        javaWatchdog.setDaemon(true);
+        javaWatchdog.start();
+    }
+
+    private long readIntervalSec() {
+        try {
+            JSONObject cfg = new JSONObject(new String(
+                    java.nio.file.Files.readAllBytes(
+                            new java.io.File(getFilesDir(), "config.json").toPath()),
+                    StandardCharsets.UTF_8));
+            return cfg.getJSONObject("loop").getLong("interval_sec");
+        } catch (Exception e) {
+            return 60L;
+        }
+    }
+
+    private void dumpThreadsAndKill(long thresholdMs, long mtime) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("===== java watchdog %tF %<tT: status mtime stale > %d ms (mtime=%d) =====%n",
+                System.currentTimeMillis(), thresholdMs, mtime));
+        for (java.util.Map.Entry<Thread, java.lang.StackTraceElement[]> e
+                : Thread.getAllStackTraces().entrySet()) {
+            Thread t = e.getKey();
+            sb.append("\n\"").append(t.getName()).append("\" state=").append(t.getState()).append('\n');
+            for (StackTraceElement el : e.getValue()) sb.append("    at ").append(el).append('\n');
+        }
+        try {
+            java.io.File out = new java.io.File(getFilesDir(), "stall_dump_java.txt");
+            java.io.FileWriter w = new java.io.FileWriter(out, true);
+            w.write(sb.toString());
+            w.close();
+        } catch (Exception ignored) { }
+        Log.e(TAG, "status stale > " + thresholdMs + "ms; dumping threads and killing process");
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     /** 复活闹钟链：每次服务启动都预约 15 分钟后的一次性闹钟（到点由 GuardAlarmReceiver
@@ -64,7 +134,7 @@ public class GuardService extends Service {
                 new Intent(this, GuardAlarmReceiver.class),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 15 * 60 * 1000L, pi);
+                SystemClock.elapsedRealtime() + 5 * 60 * 1000L, pi);
     }
 
     /** 监督线程：start_guard 无论正常返回还是抛异常，30s 后重新拉起。
