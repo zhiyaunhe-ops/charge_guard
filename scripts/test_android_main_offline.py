@@ -106,7 +106,8 @@ def test_safelog_failover(tmp: Path) -> None:
 
 def test_loop_survives_raising_ticks(tmp: Path) -> None:
     am._load_cfg = lambda app_dir: make_cfg()
-    csv_path = tmp / "sdcard" / "phone_guard_log.csv"
+    csv_path = tmp / "guard_log.csv"                 # v2.1 起 CSV 固定私有目录
+    sdcard_csv = tmp / "sdcard" / "phone_guard_log.csv"
     am.STOP["flag"] = False
 
     done = threading.Event()
@@ -136,15 +137,15 @@ def test_loop_survives_raising_ticks(tmp: Path) -> None:
     rows = csv_path.read_text(encoding="utf-8").splitlines()
     assert any(",stop," in line for line in rows), "缺 stop 行"
     assert (tmp / "status.json").exists(), "status.json 没产出"
+    assert not sdcard_csv.exists(), "循环线程不应再写 /sdcard CSV（v2.1 硬规则）"
     print(f"    ✓ A/C：tick 连炸 {errors} 次循环不退、stop 行正常、status.json 已产出、无外抛")
 
 
-def test_stall_accounting_switches_to_private(tmp: Path) -> None:
-    """连续卡死 ≥2 次后，新进程应直接用私有目录起步并清零记账。"""
+def test_mirror_thread_copies_status(tmp: Path) -> None:
+    """v2.1：循环线程只写私有目录；/sdcard 只由镜像线程搬 status.json（尽力而为）。"""
     am._load_cfg = lambda app_dir: make_cfg()
-    (tmp / "stall_count").write_text("2", encoding="utf-8")
-    csv_sdcard = tmp / "sdcard" / "phone_guard_log.csv"
     csv_private = tmp / "guard_log.csv"
+    mirror = tmp / "sdcard" / "apk_status.json"
     am.STOP["flag"] = False
 
     done = threading.Event()
@@ -158,14 +159,14 @@ def test_stall_accounting_switches_to_private(tmp: Path) -> None:
     threading.Thread(target=run, daemon=True).start()
 
     deadline = time.time() + 15
-    while time.time() < deadline and not csv_private.exists():
+    while time.time() < deadline and not mirror.exists():
         REAL_SLEEP(0.05)
-    assert csv_private.exists(), "私有目录 CSV 没产出（stall 记账未生效？）"
-    assert not csv_sdcard.exists(), "卡死记账后不应再写 /sdcard 主 CSV"
-    assert (tmp / "stall_count").read_text(encoding="utf-8").strip() == "0", "记账没清零"
+    assert mirror.exists(), "镜像线程没把 status.json 搬到 /sdcard/apk_status.json"
+    assert csv_private.exists(), "私有 CSV 没产出"
+    assert not (tmp / "sdcard" / "phone_guard_log.csv").exists(), "循环线程不应写 /sdcard CSV"
     am.stop_guard()
     assert done.wait(10), "stop_guard 后没退出"
-    print("    ✓ D：stall≥2 后新进程走私有 CSV、记账清零、正常停止")
+    print("    ✓ D：私有 CSV 直写 + 镜像线程搬运 status + 循环线程零 /sdcard I/O")
 
 
 def main() -> int:
@@ -173,7 +174,7 @@ def main() -> int:
         root = Path(td)
         for name, fn in (("b", test_safelog_failover),
                          ("a", test_loop_survives_raising_ticks),
-                         ("d", test_stall_accounting_switches_to_private)):
+                         ("d", test_mirror_thread_copies_status)):
             tmp = root / name            # 每个测试独立目录，别互相踩 CSV
             tmp.mkdir(parents=True, exist_ok=True)
             patch_env(tmp)

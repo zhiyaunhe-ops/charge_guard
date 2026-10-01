@@ -11,8 +11,8 @@ android {
         applicationId = "com.zhiyaunhe.chargeguard"
         minSdk = 24
         targetSdk = 33          // 刻意不追新：33 以下前台服务不必声明 type，通知权限也少一道弹窗
-        versionCode = 2
-        versionName = "1.1"   // 加固：监督线程自动重拉 Python 循环 + onTaskRemoved 闹钟自救 + CSV 写失败降级
+        versionCode = 3
+        versionName = "1.2"   // /sdcard 移出循环线程 + 看门狗改 faulthandler+System.exit（无闪退弹窗）
         ndk {
             // 只留 arm64（K70 Pro）。x86_64 是给 MuMu 试跑的，代价是整个 Python 运行时 ×2
             //（实测 +10.3MB），手机是唯一目标后就不值得带。要在模拟器试跑时临时加回。

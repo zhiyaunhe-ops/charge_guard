@@ -9,8 +9,10 @@
 
 线程模型：GuardService 起一个线程跑 start_guard（内部 1s 步进睡眠，stop_guard 后 ≤1s 退出）。
 """
+import faulthandler
 import json
 import os
+import sys
 import threading
 import time
 
@@ -19,6 +21,7 @@ from java import jclass
 
 STOP = {"flag": False}
 HEARTBEAT = {"t": 0.0}          # 每轮循环刷新；卡死看门狗盯着它
+MIRROR = {"gen": 0}             # 镜像线程代际：start_guard 重入时旧线程自动退出
 
 # 同步自 phone/charge_guard_phone.json（含 9-26 验证的插座编号与 9-27 的告警阈值）。
 # 这里刻意内嵌成字典：APK 里不依赖文件路径，python 源目录的数据文件加载行为就不赌了。
@@ -51,11 +54,16 @@ def _stall_file(app_dir: str) -> str:
 
 
 def _watchdog(app_dir: str, max_stall: float) -> None:
-    """卡死看门狗（2026-10-01 13:24 实测)：循环无异常、无 stop 行、进程未冻结
-    （cgroup frozen=0）却 16+ 分钟无输出 —— 阻塞在某个不超时的调用里，头号嫌疑
-    /sdcard FUSE 写。监督线程救不了这种死法（它就卡在 callAttr 里），唯一出路是
-    abort 杀进程让系统重启服务；重启前先记账，同一进程谱系连续卡死 2 次，
-    下次启动直接走私有目录，不再赌 /sdcard。"""
+    """卡死看门狗（2026-10-01 13:24 实测）：循环无异常、无 stop 行、进程未冻结
+    （cgroup frozen=0）却长时间无输出 —— 阻塞在某个不超时的调用里。监督线程救不了
+    这种死法（它就卡在 callAttr 里）。
+
+    应对：先 faulthandler 把全部线程的 Python 栈倒到 stderr（logcat python.stderr，
+    人能直接看到卡在哪一行），再走 System.exit(0) 干净退出。不用 os.abort()——
+    SIGABRT 会弹「应用已停止运行」的闪退窗（2026-10-01 14:10 实测吓到机主），
+    System.exit 无弹窗；进程死后服务能否被系统拉回取决于 MIUI 自启动设置，
+    拉不回来时 `adb shell am start-foreground-service -n
+    com.zhiyaunhe.chargeguard/.GuardService` 仍可人工拉起。"""
     while not STOP["flag"]:
         time.sleep(15)
         t = HEARTBEAT["t"]
@@ -70,7 +78,37 @@ def _watchdog(app_dir: str, max_stall: float) -> None:
                     f.write(str(prev + 1))
             except Exception:
                 pass
-            os.abort()
+            try:
+                faulthandler.dump_traceback(file=sys.stderr)
+            except Exception:
+                pass
+            try:
+                jclass("java.lang.System").exit(0)
+            except Exception:
+                os.abort()    # System.exit 都失败时的最后手段
+
+
+def _mirror_loop(app_dir: str, gen: int) -> None:
+    """把私有 status.json 尽力而为地镜像到 /sdcard/apk_status.json（PC/adb 观测用）。
+
+    /sdcard 的 FUSE 写有随机卡死前科（2026-10-01 三次取证，见 _watchdog），所以
+    守护循环线程上一个 /sdcard I/O 都不碰；这个线程自己卡死也只是镜像停止更新，
+    不影响守护。gen 不一致说明有新线程接班，本线程退出。"""
+    mirror = os.path.join(SDCARD_DIR, "apk_status.json")
+    while MIRROR["gen"] == gen and not STOP["flag"]:
+        try:
+            with open(os.path.join(app_dir, "status.json"), "r", encoding="utf-8") as f:
+                data = f.read()
+            tmp = mirror + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp, mirror)
+        except Exception:
+            pass
+        for _ in range(60):
+            if MIRROR["gen"] != gen or STOP["flag"]:
+                return
+            time.sleep(1)
 
 
 def _load_cfg(app_dir: str) -> dict:
@@ -86,15 +124,10 @@ def _load_cfg(app_dir: str) -> dict:
 
 
 def _pick_csv(app_dir: str) -> str:
-    """优先用与 Termux 版相同的共享路径（PC 看门狗盯的就是它），写不进去再退回私有目录。"""
-    cand = os.path.join(SDCARD_DIR, "phone_guard_log.csv")
-    try:
-        os.makedirs(SDCARD_DIR, exist_ok=True)
-        with open(cand, "a", encoding="utf-8"):
-            pass
-        return cand
-    except Exception:
-        return os.path.join(app_dir, "guard_log.csv")
+    """[已退役] 2026-10-01 之前的主路径选择（/sdcard 优先、私有目录兜底）。
+    /sdcard FUSE 写三次随机卡死后，循环线程不再碰 /sdcard，CSV 固定私有目录。
+    保留此注释防有人找这段历史；函数体已删。"""
+    return os.path.join(app_dir, "guard_log.csv")
 
 
 def _dump_json(path: str, obj) -> None:
@@ -110,8 +143,8 @@ class SafeLog:
     2026-10-01 停摆教训：CsvLog.row 里任何一处写失败（/sdcard 瞬时 I/O 错误、_prune 的
     write_text 等）都会抛异常，循环的 except 分支里再写一行同样抛 ⇒ 异常逃出 while、
     线程死亡，而前台服务还挂着 —— 守护死了但看起来一切正常，状态停在 12:50:26。
-    这一层保证：写日志的失败永不外抛；连续失败达到阈值就整体降级到私有目录的备用 CSV
-    （status.json 的 csv_path 能看到实际在用哪个）。
+    这一层保证：写日志的失败永不外抛。v2.1 起主路径就是私有目录（ext4），primary 与
+    fallback 同路径，连续失败时重建文件句柄再试，行为退化为「纯吞异常 + 自愈句柄」。
     """
 
     def __init__(self, primary, fallback_path: str, keep_days: int, failover_after: int = 3):
@@ -156,11 +189,9 @@ def _write_status(app_dir: str, guard, csv_path: str) -> None:
         "csv_path": csv_path,
     }
     try:
+        # 只写私有目录（ext4）。/sdcard 镜像由 _mirror_loop 独立线程负责——
+        # FUSE 写随机卡死（2026-10-01 三次取证）绝不能发生在守护循环线程上。
         _dump_json(os.path.join(app_dir, "status.json"), st)
-    except Exception:
-        pass
-    try:
-        _dump_json(os.path.join(SDCARD_DIR, "apk_status.json"), st)
     except Exception:
         pass
 
@@ -195,28 +226,14 @@ def start_guard(app_dir: str, context) -> None:
     STOP["flag"] = False
     cfg = _load_cfg(app_dir)
 
-    # 卡死记账：上个进程 abort 前写的次数。≥2 ⇒ /sdcard（头号嫌疑）大概率在卡死，
-    # 这个进程直接用私有目录起步并清零记账；否则照常优先共享路径、失败再降级。
-    try:
-        with open(_stall_file(app_dir), "r", encoding="utf-8") as f:
-            stalls = int(f.read().strip() or 0)
-    except Exception:
-        stalls = 0
-    if stalls >= 2:
-        csv_path = os.path.join(app_dir, "guard_log.csv")
-        try:
-            with open(_stall_file(app_dir), "w", encoding="utf-8") as f:
-                f.write("0")
-        except Exception:
-            pass
-    else:
-        csv_path = _pick_csv(app_dir)
-
+    # CSV 一律落私有目录（ext4，无 FUSE 卡死风险）。/sdcard 的共享 CSV（Termux/PC 看门狗
+    # 时代的主路径）已退役：观测走 status.json + _mirror_loop 镜像，历史 CSV 留在 /sdcard 原地。
+    csv_path = os.path.join(app_dir, "guard_log.csv")
     cg.read_battery = _make_battery_reader(context)   # 注入 Android 电量源
 
     keep_days = int(cfg["log"]["keep_days"])
-    log = SafeLog(cg.CsvLog(csv_path, keep_days),
-                  os.path.join(app_dir, "guard_log.csv"), keep_days)
+    # primary=fallback 同路径：SafeLog 此时只负责「写失败不外抛」，连续失败会重建文件句柄。
+    log = SafeLog(cg.CsvLog(csv_path, keep_days), csv_path, keep_days)
     plug = cg.PlugMiio(cfg["plug"])
     guard = cg.Guard(cfg, plug, log, cg.Alerter(cfg["alert"]))
     try:
@@ -229,6 +246,9 @@ def start_guard(app_dir: str, context) -> None:
     HEARTBEAT["t"] = time.monotonic()
     threading.Thread(target=_watchdog, args=(app_dir, max(150, 2.5 * interval)),
                      name="guard-stall-watchdog", daemon=True).start()
+    MIRROR["gen"] += 1
+    threading.Thread(target=_mirror_loop, args=(app_dir, MIRROR["gen"]),
+                     name="guard-mirror", daemon=True).start()
     while not STOP["flag"]:
         t0 = time.monotonic()
         # 双层兜底（2026-10-01 实测：任何一层漏网的异常都会无声杀死循环——前台服务还活着，

@@ -35,33 +35,38 @@ Termux 时代的 CSV 判活，误判「守护不在」→ 每 5 分钟 `am start
 
 ## 常驻加固（2026-10-01，versionCode 2）
 
-当天 APK 出过两种「悄悄死」：
+当天 APK 出过三种「悄悄死」：
 
 1. Python 循环异常逃逸 —— `CsvLog.row` 写失败抛异常，循环 except 分支里再写一行同样抛，
-   异常逃出 while：服务活着、循环死了，status 停在 12:50:26，无任何日志（logcat 缓冲
-   轮转后不可考，代码路径是实锤）；
-2. 上滑清理杀进程 —— logcat `am_kill due to SwipeUpClean`，前台服务连同进程一起被杀，
+   异常逃出 while：服务活着、循环死了，status 停在 12:50:26（代码路径实锤）；
+2. 循环线程**卡死**（12:50:26 / 13:24:52 / 14:02 三次取证）：进程在、FGS 在、cgroup
+   frozen=0、无 Log.e 无 stop 行 ⇒ 阻塞在无超时调用里，头号嫌疑 /sdcard FUSE 写；
+3. 上滑清理杀进程 —— logcat `am_kill due to SwipeUpClean`，前台服务连同进程一起被杀，
    START_STICKY 未被 HyperOS 执行。
 
 对应加固：
 
 - `GuardService`：**监督线程** —— start_guard 无论正常返回还是抛异常，30s 后重拉
   （1s 步进退避，onDestroy 最多等 1s）；
+- **/sdcard 移出循环线程**（v2.1）：CSV 固定私有 `files/guard_log.csv`（ext4，无 FUSE）；
+  `/sdcard/charge_guard/apk_status.json` 由独立镜像线程尽力搬运（它卡死也不影响守护）；
+- **卡死看门狗**：心跳停 >150s ⇒ 先 faulthandler 把全部线程 Python 栈倒到
+  logcat `python.stderr`（下次卡死能直接看到卡在哪一行），再 `System.exit(0)` 干净退出。
+  **不要用 os.abort()**——SIGABRT 会弹「应用已停止运行」闪退窗（14:10 实测吓到机主）；
 - `GuardService.onTaskRemoved`：闹钟预约 3s 后重拉前台服务（ROM 可能拦，尽力而为；
   最可靠的仍是用户侧三项设置）；
-- `android_main.SafeLog`：写日志失败永不外抛；主 CSV 连续 3 次失败自动降级私有目录
-  （status.json 的 `csv_path` 可见实际在用哪个）；
+- `android_main.SafeLog`：写日志失败永不外抛（v2.1 起主路径=私有目录，兼自愈句柄）；
 - `start_guard` 循环体整体兜底，异常秒回时补齐整间隔防风暴；
 - MainActivity 只在未授权时请求通知权限（原来每次打开都弹一次）。
 
 回归测试：`python -X utf8 scripts/test_android_main_offline.py`（CI 有同名步骤）。
 
-## 观测链路（保持与 Termux 版一致）
+## 观测链路
 
-- CSV：优先写 `/sdcard/charge_guard/phone_guard_log.csv`（与 Termux 版同一路径）；
-  「所有文件访问」缺失或运行期写失败时由 SafeLog 退回 app 私有目录
-  （`run-as com.zhiyaunhe.chargeguard cat files/guard_log.csv`）。
-- 状态快照：`filesDir/status.json` + 镜像 `/sdcard/charge_guard/apk_status.json`，界面每 2s 刷新。
+- **CSV：私有目录 `files/guard_log.csv`**（`run-as com.zhiyaunhe.chargeguard cat files/guard_log.csv`
+  或 `tail`）。/sdcard 上的 `phone_guard_log.csv` 是 Termux/PC 看门狗时代的历史文件，**已冻结不再更新**。
+- 状态快照：私有 `filesDir/status.json`（真源）+ 镜像 `/sdcard/charge_guard/apk_status.json`
+  （独立线程尽力搬运），界面每 2s 刷新读私有那份。
 - PC 看门狗已停用（见上）；应急仍可用 `am start-foreground-service -n
   com.zhiyaunhe.chargeguard/.GuardService` 从 adb 拉起守护。
 
