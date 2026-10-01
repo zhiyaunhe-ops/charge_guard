@@ -37,5 +37,8 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- 复活闹钟链的接收端（GuardService 每次启动预约 15 分钟后的一次性闹钟） -->
+        <receiver android:name=".GuardAlarmReceiver" android:exported="false" />
     </application>
 </manifest>

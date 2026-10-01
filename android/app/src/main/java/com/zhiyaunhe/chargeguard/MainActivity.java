@@ -191,6 +191,7 @@ public class MainActivity extends Activity {
                 .putInt("stop_at", stop).putInt("resume_at", resume)
                 .putInt("interval_sec", interval)
                 .putBoolean("auto_start", cbAutoStart.isChecked())
+                .putBoolean("should_run", true)   // 复活闹钟链的开关：按「停止」会置 false
                 .apply();
 
         try {
@@ -214,6 +215,8 @@ public class MainActivity extends Activity {
     }
 
     private void stopGuard() {
+        // should_run=false：让复活闹钟链空转，否则 15 分钟内又被闹钟拉起来
+        prefs().edit().putBoolean("should_run", false).apply();
         stopService(new Intent(this, GuardService.class));
         toast("守护已停止");
     }

@@ -12,6 +12,7 @@
 import faulthandler
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -58,12 +59,13 @@ def _watchdog(app_dir: str, max_stall: float) -> None:
     （cgroup frozen=0）却长时间无输出 —— 阻塞在某个不超时的调用里。监督线程救不了
     这种死法（它就卡在 callAttr 里）。
 
-    应对：先 faulthandler 把全部线程的 Python 栈倒到 stderr（logcat python.stderr，
-    人能直接看到卡在哪一行），再走 System.exit(0) 干净退出。不用 os.abort()——
-    SIGABRT 会弹「应用已停止运行」的闪退窗（2026-10-01 14:10 实测吓到机主），
-    System.exit 无弹窗；进程死后服务能否被系统拉回取决于 MIUI 自启动设置，
-    拉不回来时 `adb shell am start-foreground-service -n
-    com.zhiyaunhe.chargeguard/.GuardService` 仍可人工拉起。"""
+    应对（v2.2 定稿）：
+      1. faulthandler 把全部线程 Python 栈同时写进 files/stall_dump.txt（追加、带时间戳）
+         和 stderr —— logcat 会轮转，落盘才是真证据（14:30 那次就是被轮转吃掉的）；
+      2. os.kill(self, SIGKILL) 立即死亡。不用 System.exit()：14:30 实测它在 JVM 关闭
+         钩子上挂死（进程拖了 4.7h 才被外力了结）；不用 os.abort()：SIGABRT 会弹
+         「应用已停止运行」闪退窗（同日下午吓到机主）。SIGKILL 立死、无弹窗；
+         进程死后服务能否被系统拉回取决于 MIUI 自启动设置与 GuardService 的复活闹钟链。"""
     while not STOP["flag"]:
         time.sleep(15)
         t = HEARTBEAT["t"]
@@ -79,13 +81,17 @@ def _watchdog(app_dir: str, max_stall: float) -> None:
             except Exception:
                 pass
             try:
-                faulthandler.dump_traceback(file=sys.stderr)
+                with open(os.path.join(app_dir, "stall_dump.txt"), "a", encoding="utf-8") as f:
+                    f.write(f"\n===== stall at {time.strftime('%F %T')} "
+                            f"(heartbeat {max_stall:.0f}s+) =====\n")
+                    faulthandler.dump_traceback(file=f)
             except Exception:
                 pass
             try:
-                jclass("java.lang.System").exit(0)
+                faulthandler.dump_traceback(file=sys.stderr)
             except Exception:
-                os.abort()    # System.exit 都失败时的最后手段
+                pass
+            os.kill(os.getpid(), signal.SIGKILL)
 
 
 def _mirror_loop(app_dir: str, gen: int) -> None:

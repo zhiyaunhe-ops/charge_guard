@@ -49,8 +49,22 @@ public class GuardService extends Service {
             wakeLock.setReferenceCounted(false);
         }
         wakeLock.acquire();
+        scheduleRevivalAlarm();
         startPython();
         return START_STICKY;
+    }
+
+    /** 复活闹钟链：每次服务启动都预约 15 分钟后的一次性闹钟（到点由 GuardAlarmReceiver
+     *  拉起服务 → onStartCommand 再续约）。进程死透后闹钟仍会触发（除非被 force-stop），
+     *  这是 START_STICKY 在 HyperOS 上被拦之后验证可行的自动补位通道
+     *  （2026-10-01：SIGKILL 自救 / SwipeUpClean 之后系统都没重启过服务）。 */
+    private void scheduleRevivalAlarm() {
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        PendingIntent pi = PendingIntent.getBroadcast(this, 2,
+                new Intent(this, GuardAlarmReceiver.class),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + 15 * 60 * 1000L, pi);
     }
 
     /** 监督线程：start_guard 无论正常返回还是抛异常，30s 后重新拉起。

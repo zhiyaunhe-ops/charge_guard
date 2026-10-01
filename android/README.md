@@ -50,9 +50,13 @@ Termux 时代的 CSV 判活，误判「守护不在」→ 每 5 分钟 `am start
   （1s 步进退避，onDestroy 最多等 1s）；
 - **/sdcard 移出循环线程**（v2.1）：CSV 固定私有 `files/guard_log.csv`（ext4，无 FUSE）；
   `/sdcard/charge_guard/apk_status.json` 由独立镜像线程尽力搬运（它卡死也不影响守护）；
-- **卡死看门狗**：心跳停 >150s ⇒ 先 faulthandler 把全部线程 Python 栈倒到
-  logcat `python.stderr`（下次卡死能直接看到卡在哪一行），再 `System.exit(0)` 干净退出。
-  **不要用 os.abort()**——SIGABRT 会弹「应用已停止运行」闪退窗（14:10 实测吓到机主）；
+- **卡死看门狗**：心跳停 >150s ⇒ faulthandler 把全部线程 Python 栈**追加落盘**
+  `files/stall_dump.txt`（logcat 会轮转、14:30 那次证据就是这么丢的）并镜像到
+  `python.stderr`，然后 **SIGKILL 自杀**。三种死法都实测过：os.abort() 弹闪退窗
+  （14:10）、System.exit(0) 在 JVM 关闭钩子上挂死 4.7h（14:30→19:11）、SIGKILL 立死无弹窗；
+- **复活闹钟链**（v2.2）：服务每次启动预约 15 分钟后的一次性闹钟，`GuardAlarmReceiver`
+  拉起服务并续约 —— 进程死透后闹钟照常触发（除非 force-stop），是 START_STICKY 被
+  HyperOS 拦截后唯一验证可行的自动补位通道；「停止」按钮置 `should_run=false` 让链空转；
 - `GuardService.onTaskRemoved`：闹钟预约 3s 后重拉前台服务（ROM 可能拦，尽力而为；
   最可靠的仍是用户侧三项设置）；
 - `android_main.SafeLog`：写日志失败永不外抛（v2.1 起主路径=私有目录，兼自愈句柄）；
