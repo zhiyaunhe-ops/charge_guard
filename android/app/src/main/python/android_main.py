@@ -11,12 +11,14 @@
 """
 import json
 import os
+import threading
 import time
 
 import charge_guard_phone as cg
 from java import jclass
 
 STOP = {"flag": False}
+HEARTBEAT = {"t": 0.0}          # 每轮循环刷新；卡死看门狗盯着它
 
 # 同步自 phone/charge_guard_phone.json（含 9-26 验证的插座编号与 9-27 的告警阈值）。
 # 这里刻意内嵌成字典：APK 里不依赖文件路径，python 源目录的数据文件加载行为就不赌了。
@@ -42,6 +44,33 @@ BASE_CFG = {
 }
 
 SDCARD_DIR = "/sdcard/charge_guard"
+
+
+def _stall_file(app_dir: str) -> str:
+    return os.path.join(app_dir, "stall_count")
+
+
+def _watchdog(app_dir: str, max_stall: float) -> None:
+    """卡死看门狗（2026-10-01 13:24 实测)：循环无异常、无 stop 行、进程未冻结
+    （cgroup frozen=0）却 16+ 分钟无输出 —— 阻塞在某个不超时的调用里，头号嫌疑
+    /sdcard FUSE 写。监督线程救不了这种死法（它就卡在 callAttr 里），唯一出路是
+    abort 杀进程让系统重启服务；重启前先记账，同一进程谱系连续卡死 2 次，
+    下次启动直接走私有目录，不再赌 /sdcard。"""
+    while not STOP["flag"]:
+        time.sleep(15)
+        t = HEARTBEAT["t"]
+        if t and time.monotonic() - t > max_stall:
+            try:
+                with open(_stall_file(app_dir), "r", encoding="utf-8") as f:
+                    prev = int(f.read().strip() or 0)
+            except Exception:
+                prev = 0
+            try:
+                with open(_stall_file(app_dir), "w", encoding="utf-8") as f:
+                    f.write(str(prev + 1))
+            except Exception:
+                pass
+            os.abort()
 
 
 def _load_cfg(app_dir: str) -> dict:
@@ -73,6 +102,45 @@ def _dump_json(path: str, obj) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False)
     os.replace(tmp, path)
+
+
+class SafeLog:
+    """CsvLog 的保险层。
+
+    2026-10-01 停摆教训：CsvLog.row 里任何一处写失败（/sdcard 瞬时 I/O 错误、_prune 的
+    write_text 等）都会抛异常，循环的 except 分支里再写一行同样抛 ⇒ 异常逃出 while、
+    线程死亡，而前台服务还挂着 —— 守护死了但看起来一切正常，状态停在 12:50:26。
+    这一层保证：写日志的失败永不外抛；连续失败达到阈值就整体降级到私有目录的备用 CSV
+    （status.json 的 csv_path 能看到实际在用哪个）。
+    """
+
+    def __init__(self, primary, fallback_path: str, keep_days: int, failover_after: int = 3):
+        self._log = primary
+        self._primary_path = str(primary.path)
+        self._fallback_path = fallback_path
+        self._keep_days = keep_days
+        self._failover_after = failover_after
+        self._fails = 0
+
+    @property
+    def path(self) -> str:
+        return str(self._log.path)
+
+    def row(self, event: str, reading: dict | None = None,
+            action: str = "", reason: str = "", note: str = "") -> None:
+        try:
+            self._log.row(event, reading=reading, action=action, reason=reason, note=note)
+            self._fails = 0
+            return
+        except Exception:
+            self._fails += 1
+        if (self._fails >= self._failover_after
+                and str(self._log.path) == self._primary_path):
+            # 降级到私有目录另起一份；不自动切回主路径 —— 状态里看得见在用哪个，人来了再处理。
+            try:
+                self._log = cg.CsvLog(self._fallback_path, self._keep_days)
+            except Exception:
+                pass
 
 
 def _write_status(app_dir: str, guard, csv_path: str) -> None:
@@ -126,11 +194,29 @@ def _make_battery_reader(context):
 def start_guard(app_dir: str, context) -> None:
     STOP["flag"] = False
     cfg = _load_cfg(app_dir)
-    csv_path = _pick_csv(app_dir)
+
+    # 卡死记账：上个进程 abort 前写的次数。≥2 ⇒ /sdcard（头号嫌疑）大概率在卡死，
+    # 这个进程直接用私有目录起步并清零记账；否则照常优先共享路径、失败再降级。
+    try:
+        with open(_stall_file(app_dir), "r", encoding="utf-8") as f:
+            stalls = int(f.read().strip() or 0)
+    except Exception:
+        stalls = 0
+    if stalls >= 2:
+        csv_path = os.path.join(app_dir, "guard_log.csv")
+        try:
+            with open(_stall_file(app_dir), "w", encoding="utf-8") as f:
+                f.write("0")
+        except Exception:
+            pass
+    else:
+        csv_path = _pick_csv(app_dir)
 
     cg.read_battery = _make_battery_reader(context)   # 注入 Android 电量源
 
-    log = cg.CsvLog(csv_path, int(cfg["log"]["keep_days"]))
+    keep_days = int(cfg["log"]["keep_days"])
+    log = SafeLog(cg.CsvLog(csv_path, keep_days),
+                  os.path.join(app_dir, "guard_log.csv"), keep_days)
     plug = cg.PlugMiio(cfg["plug"])
     guard = cg.Guard(cfg, plug, log, cg.Alerter(cfg["alert"]))
     try:
@@ -140,13 +226,28 @@ def start_guard(app_dir: str, context) -> None:
         log.row("start", note=f"apk guard; csv={csv_path}; plug read failed: {type(e).__name__}: {e}")
 
     interval = max(10, int(cfg["loop"]["interval_sec"]))
+    HEARTBEAT["t"] = time.monotonic()
+    threading.Thread(target=_watchdog, args=(app_dir, max(150, 2.5 * interval)),
+                     name="guard-stall-watchdog", daemon=True).start()
     while not STOP["flag"]:
+        t0 = time.monotonic()
+        # 双层兜底（2026-10-01 实测：任何一层漏网的异常都会无声杀死循环——前台服务还活着，
+        # status 却永远停在最后一秒）。tick 内部 catch 控制失败；这里再兜「写日志/写状态本身」。
         try:
             guard.tick()
         except Exception as e:
-            log.row("error", note=f"{type(e).__name__}: {e}")
-        _write_status(app_dir, guard, csv_path)
-        for _ in range(interval):                     # 1s 步进，stop_guard 后 ≤1s 退出
+            try:
+                log.row("error", note=f"tick: {type(e).__name__}: {e}")
+            except Exception:
+                pass                                  # SafeLog 之上的最后一道保险
+        try:
+            _write_status(app_dir, guard, log.path)
+        except Exception:
+            pass
+        HEARTBEAT["t"] = time.monotonic()             # 喂卡死看门狗
+        # 异常秒回时也补齐到整间隔再进下一轮，防止异常风暴刷爆日志；1s 步进保证 stop_guard ≤1s 退出
+        remain = max(10, interval - int(time.monotonic() - t0))
+        for _ in range(remain):
             if STOP["flag"]:
                 break
             time.sleep(1)

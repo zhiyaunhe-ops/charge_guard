@@ -58,7 +58,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(buildUi());
         loadPrefs();
-        if (Build.VERSION.SDK_INT >= 33) {
+        // 只在还没授权时请求：2026-10-01 实测无脑请求让每次打开都弹一次权限窗。
+        // 用户点过「拒绝」后（USER_FIXED）系统也不再弹，前台通知丢失可接受——
+        // 守护不依赖通知，只是常驻提示。
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
         }
     }

@@ -1,16 +1,19 @@
 package com.zhiyaunhe.chargeguard;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 
-import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
@@ -26,7 +29,8 @@ public class GuardService extends Service {
     private static final int NOTIF_ID = 1;
 
     private PowerManager.WakeLock wakeLock;
-    private Thread worker;
+    private Thread supervisor;
+    private volatile boolean running = false;
 
     @Override
     public void onCreate() {
@@ -49,22 +53,38 @@ public class GuardService extends Service {
         return START_STICKY;
     }
 
+    /** 监督线程：start_guard 无论正常返回还是抛异常，30s 后重新拉起。
+     *
+     *  2026-10-01 实测：Python 循环会在服务存活时无声死掉（status 12:50:26 后不再更新，
+     *  前台服务和进程都活着），单层线程死了只有一条日志、没有任何补救。这层保证守护
+     *  死后至多 30s+一个周期 内回来；start_guard 自身会把 STOP 标志复位，无需额外状态。 */
     private synchronized void startPython() {
-        if (worker != null && worker.isAlive()) return;   // 单实例：服务里只允许一个循环
+        if (supervisor != null && supervisor.isAlive()) return;   // 单实例：服务里只允许一个监督者
         if (!Python.isStarted()) {
             Python.start(new AndroidPlatform(getApplicationContext()));
         }
+        running = true;
         final Context app = getApplicationContext();
         final String filesDir = getFilesDir().getAbsolutePath();
-        worker = new Thread(() -> {
-            try {
-                PyObject mod = Python.getInstance().getModule("android_main");
-                mod.callAttr("start_guard", filesDir, app);
-            } catch (Throwable t) {
-                Log.e(TAG, "python guard loop died", t);
+        supervisor = new Thread(() -> {
+            while (running) {
+                try {
+                    Python.getInstance().getModule("android_main")
+                            .callAttr("start_guard", filesDir, app);
+                    if (running) Log.w(TAG, "guard loop returned unexpectedly; restart in 30s");
+                } catch (Throwable t) {
+                    Log.e(TAG, "guard loop died; restart in 30s", t);
+                }
+                for (int i = 0; running && i < 30; i++) {   // 1s 步进：onDestroy 最多等 1s
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
             }
-        }, "guard-python");
-        worker.start();
+        }, "guard-supervisor");
+        supervisor.start();
     }
 
     private Notification buildNotification(String text) {
@@ -76,13 +96,35 @@ public class GuardService extends Service {
                 .build();
     }
 
+    /** 进程被杀前的最后自救窗口：上滑清理（HyperOS SwipeUpClean，2026-10-01 实测
+     *  am_kill due to SwipeUpClean，START_STICKY 也被拦）走到这里时进程还在，
+     *  用闹钟预约 3s 后重新拉起。能否成功取决于 ROM；最可靠的仍是用户侧三项设置：
+     *  MIUI 自启动 + 省电策略无限制 + 最近任务锁定。 */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        if (getSharedPreferences("cfg", MODE_PRIVATE).getBoolean("auto_start", true)) {
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            Intent svc = new Intent(this, GuardService.class);
+            PendingIntent pi = Build.VERSION.SDK_INT >= 26
+                    ? PendingIntent.getForegroundService(this, 1, svc,
+                            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE)
+                    : PendingIntent.getService(this, 1, svc,
+                            PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 3000, pi);
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
     @Override
     public void onDestroy() {
+        running = false;
         try {
             if (Python.isStarted()) {
                 Python.getInstance().getModule("android_main").callAttr("stop_guard");
             }
         } catch (Throwable ignored) { }
+        if (supervisor != null) supervisor.interrupt();
         if (wakeLock != null) wakeLock.release();
         stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();

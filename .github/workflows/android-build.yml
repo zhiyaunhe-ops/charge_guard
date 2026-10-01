@@ -28,6 +28,9 @@ jobs:
       - name: Guard self-test (pure stdlib, no device needed)
         run: python3 -X utf8 phone/charge_guard_phone.py --self-test
 
+      - name: android_main offline regression (loop must survive raising ticks)
+        run: python3 -X utf8 scripts/test_android_main_offline.py
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
