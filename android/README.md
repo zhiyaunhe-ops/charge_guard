@@ -57,6 +57,11 @@ Termux 时代的 CSV 判活，误判「守护不在」→ 每 5 分钟 `am start
 - **复活闹钟链**（v2.2）：服务每次启动预约 **5 分钟**后的一次性闹钟，`GuardAlarmReceiver`
   拉起服务并续约 —— 进程死透后闹钟照常触发（除非 force-stop），是 START_STICKY 被
   HyperOS 拦截后唯一验证可行的自动补位通道；「停止」按钮置 `should_run=false` 让链空转；
+- **wakelock 只在充电时持有**（v2.5）：恒持 PARTIAL_WAKE_LOCK 让 CPU 永远进不了
+  suspend —— batterystats 实测 `chargeguard:loop` 连续持有 10h31m，占待机耗电大头
+  （Termux 的 `termux-wake-lock` 同病，只是当时没归因）。插电=持锁保证 60s 节拍；
+  不插电=放锁深睡，5 分钟唤醒闹钟驱动采样（掉电 ~1%/10min，粒度足够）。
+  双看门狗阈值同步提到 600s 起步，避免误杀深睡节拍；
 - **Java 侧看门狗**（v2.3）：20:48 的 stall 连 python 看门狗都一起冻住了（GIL 被卡死线程
   持有，stall_count 没来得及自增）——这条线程不碰 python，只盯 `status.json` 的 mtime，
   超时把全部线程的 Java 栈落盘 `files/stall_dump_java.txt`（能看到卡在哪个 Java 方法）

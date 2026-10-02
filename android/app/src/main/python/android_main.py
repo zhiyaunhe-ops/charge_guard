@@ -250,7 +250,9 @@ def start_guard(app_dir: str, context) -> None:
 
     interval = max(10, int(cfg["loop"]["interval_sec"]))
     HEARTBEAT["t"] = time.monotonic()
-    threading.Thread(target=_watchdog, args=(app_dir, max(150, 2.5 * interval)),
+    # v2.5：不插电时 Java 侧放掉 wakelock、CPU 深睡，采样靠 5 分钟唤醒闹钟驱动，
+    # 心跳合法间隔拉长到 ~300s+；看门狗阈值必须盖过它（原 150s 会每次唤醒都误杀）。
+    threading.Thread(target=_watchdog, args=(app_dir, max(600, 8 * interval)),
                      name="guard-stall-watchdog", daemon=True).start()
     MIRROR["gen"] += 1
     threading.Thread(target=_mirror_loop, args=(app_dir, MIRROR["gen"]),

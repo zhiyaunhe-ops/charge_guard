@@ -54,12 +54,31 @@ public class GuardService extends Service {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "chargeguard:loop");
             wakeLock.setReferenceCounted(false);
         }
-        wakeLock.acquire();
+        // v2.5：只在充电时持锁。恒持 PARTIAL_WAKE_LOCK 让 CPU 永远进不了 suspend ——
+        // batterystats 实测 chargeguard:loop 连续持有 10h31m，占待机耗电大头。
+        // 插电：持锁保证 60s 节拍（充电时耗电无所谓，且要精确切 65%）；
+        // 不插电：放锁深睡，5 分钟一次的复活闹钟（ELAPSED_WAKEUP）负责唤醒采样，
+        // 待机掉电 ~1%/10min，5 分钟粒度足够。读不到电量按充电处理：宁可多耗电不能漏管。
+        if (isPlugged()) {
+            wakeLock.acquire();
+        } else {
+            wakeLock.release();
+        }
         startedAt = System.currentTimeMillis();
         scheduleRevivalAlarm();
         startPython();
         startJavaWatchdog();
         return START_STICKY;
+    }
+
+    private boolean isPlugged() {
+        try {
+            android.content.Intent i = registerReceiver(null,
+                    new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            return i != null && i.getIntExtra("plugged", 0) != 0;
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     /** Java 侧卡死看门狗（v2.3）：python 侧看门狗（android_main._watchdog）会被 GIL
@@ -70,7 +89,9 @@ public class GuardService extends Service {
     private synchronized void startJavaWatchdog() {
         if (javaWatchdog != null && javaWatchdog.isAlive()) return;
         final long intervalSec = readIntervalSec();
-        final long thresholdMs = Math.max(240_000L, intervalSec * 4000 + 60_000);
+        // v2.5：不插电时 CPU 深睡、靠 5 分钟闹钟唤醒采样，status mtime 合法间隔拉长到
+        // ~300s+；阈值必须盖过它，否则每次唤醒都会误杀。600s 起步。
+        final long thresholdMs = Math.max(600_000L, intervalSec * 8000 + 60_000);
         javaWatchdog = new Thread(() -> {
             while (running) {
                 try {
