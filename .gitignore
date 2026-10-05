@@ -30,3 +30,6 @@ android/**/build/
 android/local.properties
 android/.idea/
 android/dist/
+
+# ZCode 工具的忽略规则文件（本地保留，不入库）
+.zcodeignore
