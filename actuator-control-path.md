@@ -494,3 +494,13 @@ python fetch_tokens.py --region cn     # 登录小米账号（可能走 2FA/图�
 - 首款可接入米家的充电器（OTA 增加多端口协议控制）— https://news.mydrivers.com/1/1068/1068361.htm
 - 小米官方：蓝牙网关只能看状态/联动，**不能控制**子设备；远程控制需要蓝牙 Mesh 网关
   — https://cdn.cnbj1.fds.api.mi-img.com/ics-resources/articles/60bf1abd20a523e5ed34b663.html
+
+## Related documents
+
+返回 README 或按需跳转相关实现说明，不要一次性加载全部文档。
+
+- [README / 总入口](README.md)
+- [android/README.md](android/README.md)
+- [charge-strategy-review.md](charge-strategy-review.md)
+- [patches/README.md](patches/README.md)
+- [phone/SETUP.md](phone/SETUP.md)

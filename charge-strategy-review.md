@@ -235,3 +235,13 @@ Chargie 的产品页把「24/7 插电设备」单列（自助终端、车载导�
 - uratmangun/tuya-battery-monitor — https://github.com/uratmangun/tuya-battery-monitor
 - StackOverflow：无线调试端口的发现范围与随机化 — https://stackoverflow.com/questions/71126490/obtain-wireless-debugging-port-number-programatically
 - 小米官方 FAQ：电池保护 / 智能充电（三档：常规 100% / 优化 / 电池保护 80%）— https://www.mi.com/uk/support/faq/details/KA-529921
+
+## Related documents
+
+返回 README 或按需跳转相关实现说明，不要一次性加载全部文档。
+
+- [README / 总入口](README.md)
+- [actuator-control-path.md](actuator-control-path.md)
+- [android/README.md](android/README.md)
+- [patches/README.md](patches/README.md)
+- [phone/SETUP.md](phone/SETUP.md)

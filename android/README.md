@@ -97,3 +97,13 @@ Termux 时代的 CSV 判活，误判「守护不在」→ 每 5 分钟 `am start
 | `app/src/main/java/.../BootReceiver.java` | 开机自启 |
 | `app/src/main/python/android_main.py` | Android 适配层：BatteryManager 电量注入、CSV/状态镜像、测试入口 |
 | `app/src/main/python/charge_guard_phone.py` | **副本**，同步用 `scripts/sync_android_python.sh` |
+
+## Related documents
+
+返回 README 或按需跳转相关实现说明，不要一次性加载全部文档。
+
+- [README / 总入口](../README.md)
+- [actuator-control-path.md](../actuator-control-path.md)
+- [charge-strategy-review.md](../charge-strategy-review.md)
+- [patches/README.md](../patches/README.md)
+- [phone/SETUP.md](../phone/SETUP.md)

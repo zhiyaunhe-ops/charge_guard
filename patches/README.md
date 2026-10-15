@@ -114,3 +114,13 @@
     ⇒ 系统认得它、但没有活动连接 ⇒ 「找不到」纯粹因为当时它没在广播；
   - BLE 扫描一度完全收不到任何广播，**把蓝牙无线电关掉再打开**即恢复
     （同一台机器、同一驱动）——那是一次可复位的卡死，不必先动驱动。
+
+## Related documents
+
+返回 README 或按需跳转相关实现说明，不要一次性加载全部文档。
+
+- [README / 总入口](../README.md)
+- [actuator-control-path.md](../actuator-control-path.md)
+- [android/README.md](../android/README.md)
+- [charge-strategy-review.md](../charge-strategy-review.md)
+- [phone/SETUP.md](../phone/SETUP.md)

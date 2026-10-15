@@ -318,3 +318,13 @@ python -X utf8 charge_guard.py --actuator ble           # 正式
   1. 档位改为 **65/50**（常驻插电设备，不是随身机）；
   2. 稳定性门从「两次读数相同」改为「连续同判定」（真机 dry-run 发现前者会被单调变化的电量卡死）；
   3. 失联兜底从「一律保持通电」改为分级 + 12h 上限（一律保持通电等于把主目标丢掉）。
+
+## Related documents
+
+按任务读取：首先看本页，策略、安装、Agent 提示和事故资料只在需要时打开。
+
+- [actuator-control-path.md](actuator-control-path.md)
+- [android/README.md](android/README.md)
+- [charge-strategy-review.md](charge-strategy-review.md)
+- [patches/README.md](patches/README.md)
+- [phone/SETUP.md](phone/SETUP.md)

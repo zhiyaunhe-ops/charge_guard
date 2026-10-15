@@ -304,3 +304,13 @@ Doze 白名单 `+com.termux`、以及 MIUI 专属 op `10021/10020/10016 = allow`
    可以当独立保险丝（例如「通电 90 分钟后无条件断电」），但要单独验证。
 3. **长期可靠性**：手机侧脚本目前只在 PC 上跑过自测与真机只读探测，
    在手机 Termux 里连续跑几天才算数。
+
+## Related documents
+
+返回 README 或按需跳转相关实现说明，不要一次性加载全部文档。
+
+- [README / 总入口](../README.md)
+- [actuator-control-path.md](../actuator-control-path.md)
+- [android/README.md](../android/README.md)
+- [charge-strategy-review.md](../charge-strategy-review.md)
+- [patches/README.md](../patches/README.md)
